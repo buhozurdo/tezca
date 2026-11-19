@@ -28,6 +28,15 @@ class TestSignatures(unittest.TestCase):
             self.assertTrue(r0.verify_signature(secret))
             self.assertFalse(r0.verify_signature("wrong-key"))
 
+            # Receipt without signature returns False
+            from tezca.receipt import Receipt
+            unsigned = Receipt(index=99, timestamp="ts", agent_id="a", event_type="e", data={}, metadata={}, prev_hash="p", hash="h")
+            self.assertFalse(unsigned.verify_signature(secret))
+
+            # Reconstruct from dict without metadata
+            reconstructed = Receipt.from_dict({"index": 99, "timestamp": "ts", "agent_id": "a", "event_type": "e", "data": {}, "prev_hash": "p", "hash": "h"})
+            self.assertEqual(reconstructed.metadata, {})
+
             # Ledger verify with correct secret key
             valid, report = ledger.verify(secret_key=secret)
             self.assertTrue(valid)

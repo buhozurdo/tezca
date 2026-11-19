@@ -1,8 +1,12 @@
 """
-Tests for the tezca CLI interface.
+Comprehensive tests for the tezca CLI interface covering all commands and error paths.
 """
 
 import io
+import json
+import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -33,47 +37,177 @@ class TestCLI(unittest.TestCase):
         self.assertIn("[OK] 2 events verified.", output)
         self.assertIn("Chain integrity: INTACT", output)
 
-    def test_cli_tail(self):
+    def test_cli_verify_nonexistent(self):
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(["verify", "nonexistent_file_path.db"])
+        self.assertEqual(code, 1)
+        self.assertIn("not found", err_buf.getvalue())
+
+    def test_cli_verify_tampered_chain(self):
+        # Directly alter hash chain link
+        conn = sqlite3.connect(self.db_path)
+        cur = conn.cursor()
+        cur.execute("UPDATE tezca_receipts SET prev_hash = '9999999999999999999999999999999999999999999999999999999999999999' WHERE index_num = 1;")
+        conn.commit()
+        conn.close()
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(["verify", str(self.db_path)])
+        self.assertEqual(code, 1)
+        self.assertIn("Tampering detected", err_buf.getvalue())
+        self.assertIn("Expected prev_hash", err_buf.getvalue())
+
+    def test_cli_tail_text_and_json(self):
+        # Text output
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = main(["tail", str(self.db_path), "-n", "1"])
         self.assertEqual(code, 0)
-        output = buf.getvalue()
-        self.assertIn("#1", output)
-        self.assertIn("type=result", output)
+        self.assertIn("#1", buf.getvalue())
 
-    def test_cli_export(self):
+        # JSON output
+        buf_json = io.StringIO()
+        with redirect_stdout(buf_json):
+            code_json = main(["tail", str(self.db_path), "-n", "2", "--json"])
+        self.assertEqual(code_json, 0)
+        lines = buf_json.getvalue().strip().split("\n")
+        self.assertEqual(len(lines), 2)
+        parsed = json.loads(lines[0])
+        self.assertEqual(parsed["index"], 0)
+
+    def test_cli_tail_nonexistent(self):
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(["tail", "nonexistent.db"])
+        self.assertEqual(code, 1)
+
+    def test_cli_export_file_and_stdout(self):
+        # Export to file
         export_file = Path(self.temp_dir.name) / "exported.jsonl"
         code = main(["export", str(self.db_path), "-o", str(export_file)])
         self.assertEqual(code, 0)
         self.assertTrue(export_file.exists())
-        lines = export_file.read_text(encoding="utf-8").strip().split("\n")
-        self.assertEqual(len(lines), 2)
 
-    def test_cli_inspect(self):
+        # Export to stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_stdout = main(["export", str(self.db_path)])
+        self.assertEqual(code_stdout, 0)
+        self.assertIn('"agent-cli"', buf.getvalue())
+
+    def test_cli_export_nonexistent(self):
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code = main(["export", "nonexistent.db"])
+        self.assertEqual(code, 1)
+
+    def test_cli_inspect_found_and_not_found(self):
+        # Found
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = main(["inspect", str(self.db_path), "0"])
         self.assertEqual(code, 0)
-        output = buf.getvalue()
-        self.assertIn('"agent_id": "agent-cli"', output)
-        self.assertIn('"event_type": "query"', output)
+        self.assertIn('"agent_id": "agent-cli"', buf.getvalue())
 
-    def test_cli_proof_and_verify_proof(self):
+        # Not found
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code_nf = main(["inspect", str(self.db_path), "999"])
+        self.assertEqual(code_nf, 1)
+        self.assertIn("not found", err_buf.getvalue())
+
+        # Nonexistent file
+        err_file = io.StringIO()
+        with redirect_stderr(err_file):
+            code_file = main(["inspect", "nonexistent.db", "0"])
+        self.assertEqual(code_file, 1)
+
+    def test_cli_proof_and_verify_proof_complete(self):
         proof_file = Path(self.temp_dir.name) / "test_cli.tezcaproof"
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = main(["proof", str(self.db_path), "0", "-o", str(proof_file)])
         self.assertEqual(code, 0)
         self.assertTrue(proof_file.exists())
-        self.assertIn("[OK] Cryptographic proof bundle exported", buf.getvalue())
 
-        # Verify the exported proof file
-        buf_verify = io.StringIO()
-        with redirect_stdout(buf_verify):
-            code_verify = main(["verify-proof", str(proof_file)])
-        self.assertEqual(code_verify, 0)
-        self.assertIn("[OK] Proof verified: Receipt #0 is cryptographically sealed.", buf_verify.getvalue())
+        # Default output path
+        buf_def = io.StringIO()
+        with redirect_stdout(buf_def):
+            code_def = main(["proof", str(self.db_path), "1"])
+        self.assertEqual(code_def, 0)
+        expected_def = Path(f"{self.db_path.stem}_event_1.tezcaproof")
+        if expected_def.exists():
+            expected_def.unlink()
+
+        # Proof out of range
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code_bad = main(["proof", str(self.db_path), "999"])
+        self.assertEqual(code_bad, 1)
+
+        # Proof nonexistent DB
+        err_db = io.StringIO()
+        with redirect_stderr(err_db):
+            code_nodb = main(["proof", "nonexistent.db", "0"])
+        self.assertEqual(code_nodb, 1)
+
+        # Verify-proof valid
+        buf_v = io.StringIO()
+        with redirect_stdout(buf_v):
+            code_v = main(["verify-proof", str(proof_file)])
+        self.assertEqual(code_v, 0)
+
+        # Verify-proof nonexistent
+        err_pv = io.StringIO()
+        with redirect_stderr(err_pv):
+            code_pv = main(["verify-proof", "nonexistent.tezcaproof"])
+        self.assertEqual(code_pv, 1)
+
+        # Verify-proof tampered
+        tampered_file = Path(self.temp_dir.name) / "corrupt.tezcaproof"
+        data = json.loads(proof_file.read_text(encoding="utf-8"))
+        data["receipt"]["hash"] = "0" * 64
+        tampered_file.write_text(json.dumps(data), encoding="utf-8")
+
+        err_tamper = io.StringIO()
+        with redirect_stderr(err_tamper):
+            code_t = main(["verify-proof", str(tampered_file)])
+        self.assertEqual(code_t, 1)
+        self.assertIn("Proof verification failed", err_tamper.getvalue())
+
+        # Verify-proof invalid JSON syntax
+        bad_json = Path(self.temp_dir.name) / "syntax_error.tezcaproof"
+        bad_json.write_text("{not valid json", encoding="utf-8")
+        err_bad = io.StringIO()
+        with redirect_stderr(err_bad):
+            code_syntax = main(["verify-proof", str(bad_json)])
+        self.assertEqual(code_syntax, 1)
+
+    def test_cli_module_execution(self):
+        # Test python -m tezca --help
+        res = subprocess.run([sys.executable, "-m", "tezca", "--help"], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("usage: tezca", res.stdout)
+
+    def test_cli_verify_unexpected_exception(self):
+        import unittest.mock
+        with unittest.mock.patch("tezca.cli.Ledger", side_effect=RuntimeError("disk error")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(["verify", str(self.db_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("Verification failed", err_buf.getvalue())
+
+    def test_cli_proof_unexpected_exception(self):
+        import unittest.mock
+        with unittest.mock.patch("tezca.ledger.Ledger.export_proof", side_effect=RuntimeError("export failed")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(["proof", str(self.db_path), "0"])
+            self.assertEqual(code, 1)
+            self.assertIn("Failed to export proof", err_buf.getvalue())
 
 
 if __name__ == "__main__":

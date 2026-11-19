@@ -96,6 +96,15 @@ class TestMerkleTree(unittest.TestCase):
         self.assertEqual(proof.steps, restored.steps)
         self.assertTrue(restored.verify())
 
+    def test_invalid_step_position_fails_verification(self):
+        proof = MerkleProof(
+            leaf_index=0,
+            leaf_hash="a" * 64,
+            root_hash="b" * 64,
+            steps=[MerkleStep(position="invalid_pos", sibling_hash="c" * 64)],
+        )
+        self.assertFalse(proof.verify())
+
     def test_ledger_merkle_integration(self):
         temp_dir = tempfile.TemporaryDirectory()
         db_path = Path(temp_dir.name) / "merkle_audit.db"
