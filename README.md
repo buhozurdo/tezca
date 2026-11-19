@@ -129,6 +129,21 @@ tezca export audit.db --output audit.jsonl
 
 ---
 
+## Examples
+
+Runnable scripts are provided in the `examples/` directory:
+
+* `examples/basic_usage.py`: Basic ledger initialization, recording prompt/tool/response events, and verification.
+* `examples/guardrails_and_tools.py`: Demonstrates compliance logging, safety guardrail verdicts, and blocked actions.
+* `examples/tamper_demonstration.py`: Simulates out-of-band tampering in SQLite and demonstrates automatic tamper detection.
+
+To run an example:
+```bash
+python examples/basic_usage.py
+```
+
+---
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
