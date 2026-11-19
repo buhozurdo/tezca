@@ -62,9 +62,25 @@ class TestStorage(unittest.TestCase):
 
         self.assertIsNone(storage.get_by_index(999))
 
+        tail = storage.get_tail(1)
+        self.assertEqual(len(tail), 1)
+        self.assertEqual(tail[0].index, 1)
+
+        raw_rows = list(storage.iter_raw())
+        self.assertEqual(len(raw_rows), 2)
+
         # Test iter_all on non-existent file
+        storage.close()
+
+        # Test reopening existing file and auto_flush
+        storage2 = JSONLStorage(jsonl_path, auto_flush=True)
+        self.assertIsNotNone(storage2.get_latest())
+        storage2.flush()
+        storage2.close()
+
         jsonl_path.unlink()
         storage_missing = JSONLStorage(jsonl_path)
+        storage_missing.close()
         jsonl_path.unlink()
         self.assertEqual(list(storage_missing.iter_all()), [])
 
@@ -102,7 +118,30 @@ class TestStorage(unittest.TestCase):
         self.assertIsNotNone(r)
         self.assertIsNone(r.signature)
         self.assertIsNone(r.signer_id)
+
+        # Test SQLiteStorage get_tail and iter_raw
+        self.assertEqual(storage.get_tail(0), [])
+        tail = storage.get_tail(5)
+        self.assertEqual(len(tail), 1)
+        raw_rows = list(storage.iter_raw())
+        self.assertEqual(len(raw_rows), 1)
         storage.close()
+
+    def test_base_storage_backend_defaults(self):
+        class ListStorage(StorageBackend):
+            def __init__(self, items):
+                self.items = items
+            def iter_all(self):
+                return iter(self.items)
+
+        r = Receipt(0, "ts", "agent", "ev", {"k": 1}, {}, "0"*64, "1"*64)
+        base = ListStorage([r])
+        self.assertEqual(base.get_tail(0), [])
+        tail = base.get_tail(2)
+        self.assertEqual(len(tail), 1)
+        raw = list(base.iter_raw())
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(raw[0][0], 0)
 
 
 if __name__ == "__main__":

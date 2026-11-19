@@ -8,10 +8,16 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from tezca.canonical import canonical_dumps
 from tezca.receipt import Receipt
+
+_SQL_SELECT_FIELDS = (
+    "SELECT index_num, timestamp, agent_id, event_type, "
+    "data_json, metadata_json, prev_hash, hash, signature, signer_id "
+    "FROM tezca_receipts"
+)
 
 
 class StorageBackend:
@@ -28,6 +34,27 @@ class StorageBackend:
 
     def iter_all(self) -> Iterator[Receipt]:
         raise NotImplementedError
+
+    def iter_raw(self) -> Iterator[tuple]:
+        """Stream raw stored fields to enable fast-path cryptographic verification."""
+        for r in self.iter_all():
+            yield (
+                r.index,
+                r.timestamp,
+                r.agent_id,
+                r.event_type,
+                canonical_dumps(r.data),
+                canonical_dumps(r.metadata),
+                r.prev_hash,
+                r.hash,
+                r.signature,
+                r.signer_id,
+            )
+
+    def get_tail(self, n: int = 10) -> list[Receipt]:
+        """Fetch the last n receipts."""
+        all_r = list(self.iter_all())
+        return all_r[-n:] if n > 0 else []
 
     def count(self) -> int:
         raise NotImplementedError
@@ -56,6 +83,8 @@ class SQLiteStorage(StorageBackend):
             cur = self._conn.cursor()
             cur.execute("PRAGMA journal_mode=WAL;")
             cur.execute("PRAGMA synchronous=NORMAL;")
+            cur.execute("PRAGMA cache_size=-64000;")
+            cur.execute("PRAGMA temp_store=MEMORY;")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS tezca_receipts (
                     index_num INTEGER PRIMARY KEY,
@@ -136,53 +165,49 @@ class SQLiteStorage(StorageBackend):
     def get_latest(self) -> Optional[Receipt]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                """
-                SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash,
-                       signature, signer_id
-                FROM tezca_receipts
-                ORDER BY index_num DESC
-                LIMIT 1;
-                """
-            )
+            cur.execute(f"{_SQL_SELECT_FIELDS} ORDER BY index_num DESC LIMIT 1;")
             row = cur.fetchone()
             return self._row_to_receipt(row) if row else None
 
     def get_by_index(self, index: int) -> Optional[Receipt]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                """
-                SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash,
-                       signature, signer_id
-                FROM tezca_receipts
-                WHERE index_num = ?;
-                """,
-                (index,),
-            )
+            cur.execute(f"{_SQL_SELECT_FIELDS} WHERE index_num = ?;", (index,))
             row = cur.fetchone()
             return self._row_to_receipt(row) if row else None
 
     def iter_all(self) -> Iterator[Receipt]:
         with self._lock:
             cur = self._conn.cursor()
-            cur.execute(
-                """
-                SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash,
-                       signature, signer_id
-                FROM tezca_receipts
-                ORDER BY index_num ASC;
-                """
-            )
+            cur.execute(f"{_SQL_SELECT_FIELDS} ORDER BY index_num ASC;")
             while True:
                 rows = cur.fetchmany(500)
                 if not rows:
                     break
                 for row in rows:
                     yield self._row_to_receipt(row)
+
+    def iter_raw(self) -> Iterator[tuple]:
+        """Stream raw SQLite rows without JSON deserialization overhead."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(f"{_SQL_SELECT_FIELDS} ORDER BY index_num ASC;")
+            while True:
+                rows = cur.fetchmany(100)
+                if not rows:
+                    break
+                for row in rows:
+                    yield row
+
+    def get_tail(self, n: int = 10) -> list[Receipt]:
+        """Fetch the last n receipts directly via SQL LIMIT without scanning entire table."""
+        if n <= 0:
+            return []
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute(f"{_SQL_SELECT_FIELDS} ORDER BY index_num DESC LIMIT ?;", (n,))
+            rows = cur.fetchall()
+            return [self._row_to_receipt(row) for row in reversed(rows)]
 
     def count(self) -> int:
         with self._lock:
@@ -197,23 +222,69 @@ class SQLiteStorage(StorageBackend):
 
 class JSONLStorage(StorageBackend):
     """
-    Append-only JSON Lines storage backend for plain-text logs.
+    Append-only JSON Lines storage backend for plain-text logs with buffered I/O.
     """
 
-    def __init__(self, file_path: str | Path):
+    def __init__(self, file_path: str | Path, buffer_size: int = 65536, auto_flush: bool = False):
         self.file_path = Path(file_path)
+        self.buffer_size = buffer_size
+        self.auto_flush = auto_flush
         self._lock = threading.Lock()
+        self._writer: Optional[Any] = None
+        self._latest: Optional[Receipt] = None
         if not self.file_path.exists():
             self.file_path.touch()
+        else:
+            self._latest = self._read_latest_from_disk()
+
+    def _read_latest_from_disk(self) -> Optional[Receipt]:
+        last: Optional[Receipt] = None
+        if not self.file_path.exists():
+            return None
+        with open(self.file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                clean = line.strip()
+                if clean:
+                    last = Receipt.from_dict(json.loads(clean))
+        return last
+
+    def _get_writer(self) -> Any:
+        if self._writer is None or self._writer.closed:
+            self._writer = open(self.file_path, "a", encoding="utf-8", buffering=self.buffer_size)
+        return self._writer
 
     def append(self, receipt: Receipt) -> None:
         payload = json.dumps(receipt.to_dict(), ensure_ascii=False) + "\n"
         with self._lock:
-            with open(self.file_path, "a", encoding="utf-8") as f:
-                f.write(payload)
+            writer = self._get_writer()
+            writer.write(payload)
+            if self.auto_flush:
+                writer.flush()
+            self._latest = receipt
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
+                self._writer.close()
+                self._writer = None
+
+    def get_latest(self) -> Optional[Receipt]:
+        with self._lock:
+            if self._latest is not None:
+                return self._latest
+            self._latest = self._read_latest_from_disk()
+            return self._latest
 
     def iter_all(self) -> Iterator[Receipt]:
         with self._lock:
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
             if not self.file_path.exists():
                 return
             with open(self.file_path, "r", encoding="utf-8") as f:
@@ -221,6 +292,31 @@ class JSONLStorage(StorageBackend):
                     clean = line.strip()
                     if clean:
                         yield Receipt.from_dict(json.loads(clean))
+
+    def iter_raw(self) -> Iterator[tuple]:
+        """Stream raw parsed rows for high-throughput verification."""
+        with self._lock:
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
+            if not self.file_path.exists():
+                return
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    clean = line.strip()
+                    if clean:
+                        d = json.loads(clean)
+                        yield (
+                            d["index"],
+                            d["timestamp"],
+                            d["agent_id"],
+                            d["event_type"],
+                            canonical_dumps(d["data"]),
+                            canonical_dumps(d["metadata"]),
+                            d["prev_hash"],
+                            d["hash"],
+                            d.get("signature"),
+                            d.get("signer_id"),
+                        )
 
     def get_latest(self) -> Optional[Receipt]:
         last: Optional[Receipt] = None
@@ -233,6 +329,10 @@ class JSONLStorage(StorageBackend):
             if r.index == index:
                 return r
         return None
+
+    def get_tail(self, n: int = 10) -> list[Receipt]:
+        all_r = list(self.iter_all())
+        return all_r[-n:] if n > 0 else []
 
     def count(self) -> int:
         return sum(1 for _ in self.iter_all())
