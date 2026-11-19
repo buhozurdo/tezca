@@ -11,7 +11,7 @@ from tezca.proof import PROOF_SCHEMA_VERSION, ProofBundle
 from tezca.receipt import Receipt
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
-__version__ = "0.2.0b0"
+__version__ = "0.2.0"
 
 __all__ = [
     "GENESIS_HASH",
