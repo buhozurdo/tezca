@@ -239,8 +239,6 @@ class JSONLStorage(StorageBackend):
 
     def _read_latest_from_disk(self) -> Optional[Receipt]:
         last: Optional[Receipt] = None
-        if not self.file_path.exists():
-            return None
         with open(self.file_path, "r", encoding="utf-8") as f:
             for line in f:
                 clean = line.strip()
@@ -276,9 +274,6 @@ class JSONLStorage(StorageBackend):
 
     def get_latest(self) -> Optional[Receipt]:
         with self._lock:
-            if self._latest is not None:
-                return self._latest
-            self._latest = self._read_latest_from_disk()
             return self._latest
 
     def iter_all(self) -> Iterator[Receipt]:
@@ -317,12 +312,6 @@ class JSONLStorage(StorageBackend):
                             d.get("signature"),
                             d.get("signer_id"),
                         )
-
-    def get_latest(self) -> Optional[Receipt]:
-        last: Optional[Receipt] = None
-        for r in self.iter_all():
-            last = r
-        return last
 
     def get_by_index(self, index: int) -> Optional[Receipt]:
         for r in self.iter_all():

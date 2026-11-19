@@ -209,6 +209,17 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Failed to export proof", err_buf.getvalue())
 
+    def test_cli_direct_main_call(self):
+        import runpy
+        old_argv = sys.argv
+        sys.argv = ["tezca", "--help"]
+        try:
+            with self.assertRaises(SystemExit) as cm:
+                runpy.run_module("tezca.cli", run_name="__main__")
+            self.assertEqual(cm.exception.code, 0)
+        finally:
+            sys.argv = old_argv
+
 
 if __name__ == "__main__":
     unittest.main()
