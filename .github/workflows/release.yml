@@ -1,0 +1,54 @@
+name: Publish Package & GitHub Release Assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  id-token: write  # Required for OIDC PyPI Trusted Publishing
+
+jobs:
+  build-and-publish:
+    name: Build, Verify and Publish
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tezca
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Install build and verification tools
+        run: |
+          pip install --only-binary :all: build==1.2.2.post1 twine==6.1.0
+
+      - name: Build reproducible distributions (.whl and .tar.gz)
+        run: |
+          SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct) python -m build
+
+      - name: Verify package metadata and rendering
+        run: |
+          twine check --strict dist/*
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd dist && sha256sum * > checksums.sha256
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
+
+      - name: Attach artifacts to GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v2.2.1
+        with:
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
