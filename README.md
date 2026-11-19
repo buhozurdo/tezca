@@ -171,6 +171,50 @@ assert valid
 
 ---
 
+## Agent Framework Integrations
+
+`tezca` provides zero-dependency adapters and decorators for major agent frameworks:
+
+### Decorating Tools and Functions
+
+Automatically capture inputs, latency, outputs, and errors:
+
+```python
+from tezca import Ledger, wrap_tool
+
+ledger = Ledger("audit.db")
+
+@wrap_tool(ledger, agent_id="support-bot", tool_name="fetch_user_profile")
+def fetch_profile(user_id: str):
+    return {"id": user_id, "tier": "enterprise"}
+
+# Every invocation is sealed with its execution duration into the ledger
+profile = fetch_profile("usr_123")
+```
+
+### Wrapping LLM Completions (OpenAI / Anthropic)
+
+```python
+from tezca import Ledger, wrap_completion
+
+@wrap_completion(ledger, agent_id="support-bot", model="gpt-4o")
+def call_llm(prompt: str):
+    return client.chat.completions.create(...)
+```
+
+### LangChain & LangGraph Callback Handler
+
+```python
+from tezca import Ledger, TezcaCallbackHandler
+
+handler = TezcaCallbackHandler(ledger, agent_id="langchain-agent", session_id="sess_102")
+
+# Pass handler into any LangChain or LangGraph runnable
+agent.invoke({"input": "Hello"}, config={"callbacks": [handler]})
+```
+
+---
+
 ## How It Works
 
 1. **Deterministic Canonicalization:** Every event payload is canonicalized using deterministic JSON serialization (lexicographically sorted keys, standard separators, UTF-8 normalization) before hashing.
@@ -188,6 +232,7 @@ Runnable scripts are provided in the `examples/` directory:
 * `examples/guardrails_and_tools.py`: Demonstrates compliance logging, safety guardrail verdicts, and blocked actions.
 * `examples/tamper_demonstration.py`: Simulates out-of-band tampering in SQLite and demonstrates automatic tamper detection.
 * `examples/merkle_and_proofs.py`: Demonstrates binary Merkle roots, HMAC-signed receipts, and standalone `.tezcaproof` export/verification.
+* `examples/agent_integrations.py`: Demonstrates `@wrap_tool`, `@wrap_completion`, `TezcaCallbackHandler`, and `AgentEvent`.
 
 To run an example:
 ```bash
