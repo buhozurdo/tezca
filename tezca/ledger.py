@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional, Union
 
 from tezca.canonical import GENESIS_HASH, canonical_dumps, compute_receipt_hash
+from tezca.events import AgentEvent
 from tezca.merkle import MerkleProof, MerkleTree
 from tezca.proof import ProofBundle
 from tezca.receipt import Receipt
@@ -105,6 +106,27 @@ class Ledger:
 
         self.storage.append(receipt)
         return receipt
+
+    def record_event(
+        self,
+        event: AgentEvent,
+        timestamp: Optional[str] = None,
+        secret_key: Optional[Union[str, bytes]] = None,
+        signer_id: Optional[str] = None,
+    ) -> Receipt:
+        """
+        Record a standardized AgentEvent dataclass in the ledger.
+        """
+        kwargs = event.to_record_kwargs()
+        return self.record(
+            agent_id=kwargs["agent_id"],
+            event_type=kwargs["event_type"],
+            data=kwargs["data"],
+            metadata=kwargs["metadata"],
+            timestamp=timestamp,
+            secret_key=secret_key,
+            signer_id=signer_id,
+        )
 
     def verify(self, secret_key: Optional[Union[str, bytes]] = None) -> tuple[bool, dict[str, Any]]:
         """
