@@ -14,7 +14,7 @@ from tezca.proof import PROOF_SCHEMA_VERSION, ProofBundle
 from tezca.receipt import Receipt
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
-__version__ = "0.3.0a0"
+__version__ = "0.3.0"
 
 __all__ = [
     "AgentEvent",
