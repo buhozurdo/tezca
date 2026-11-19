@@ -7,8 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tezca.canonical import GENESIS_HASH
 from tezca.ledger import Ledger
+from tezca.merkle import MerkleProof, MerkleStep
 from tezca.proof import ProofBundle
+from tezca.receipt import Receipt
 
 
 class TestProofBundle(unittest.TestCase):
@@ -44,7 +47,7 @@ class TestProofBundle(unittest.TestCase):
     def test_detect_receipt_payload_tampering(self):
         proof_file = Path(self.temp_dir.name) / "tampered.tezcaproof"
         with Ledger(self.db_path) as ledger:
-            bundle = ledger.export_proof(1, output_path=proof_file)
+            ledger.export_proof(1, output_path=proof_file)
 
         # Modify receipt data in the saved JSON file
         data = json.loads(proof_file.read_text(encoding="utf-8"))
@@ -69,6 +72,95 @@ class TestProofBundle(unittest.TestCase):
         valid, msg = tampered_bundle.verify()
         self.assertFalse(valid)
         self.assertIn("does not match bundle merkle root", msg)
+
+    def test_unsupported_schema_version(self):
+        with Ledger(self.db_path) as ledger:
+            bundle = ledger.export_proof(0)
+
+        bad_schema_bundle = ProofBundle(
+            schema_version="tezca-proof/v999",
+            ledger_genesis=bundle.ledger_genesis,
+            chain_length=bundle.chain_length,
+            latest_hash=bundle.latest_hash,
+            merkle_root=bundle.merkle_root,
+            receipt=bundle.receipt,
+            merkle_proof=bundle.merkle_proof,
+        )
+        valid, msg = bad_schema_bundle.verify()
+        self.assertFalse(valid)
+        self.assertIn("Unsupported schema version", msg)
+
+    def test_invalid_genesis_hash(self):
+        with Ledger(self.db_path) as ledger:
+            bundle = ledger.export_proof(0)
+
+        bad_genesis = ProofBundle(
+            schema_version=bundle.schema_version,
+            ledger_genesis="bad_genesis" * 4,
+            chain_length=bundle.chain_length,
+            latest_hash=bundle.latest_hash,
+            merkle_root=bundle.merkle_root,
+            receipt=bundle.receipt,
+            merkle_proof=bundle.merkle_proof,
+        )
+        valid, msg = bad_genesis.verify()
+        self.assertFalse(valid)
+        self.assertIn("Invalid genesis hash", msg)
+
+    def test_secret_key_requested_without_signature(self):
+        with Ledger(self.db_path) as ledger:
+            bundle = ledger.export_proof(0)
+
+        valid, msg = bundle.verify(secret_key="some-key")
+        self.assertFalse(valid)
+        self.assertIn("receipt has no signature", msg)
+
+    def test_leaf_hash_mismatch(self):
+        with Ledger(self.db_path) as ledger:
+            bundle = ledger.export_proof(0)
+
+        bad_proof = MerkleProof(
+            leaf_index=bundle.merkle_proof.leaf_index,
+            leaf_hash="1" * 64,
+            root_hash=bundle.merkle_proof.root_hash,
+            steps=bundle.merkle_proof.steps,
+        )
+        bad_bundle = ProofBundle(
+            schema_version=bundle.schema_version,
+            ledger_genesis=bundle.ledger_genesis,
+            chain_length=bundle.chain_length,
+            latest_hash=bundle.latest_hash,
+            merkle_root=bundle.merkle_root,
+            receipt=bundle.receipt,
+            merkle_proof=bad_proof,
+        )
+        valid, msg = bad_bundle.verify()
+        self.assertFalse(valid)
+        self.assertIn("does not match receipt hash", msg)
+
+    def test_merkle_path_failure(self):
+        with Ledger(self.db_path) as ledger:
+            bundle = ledger.export_proof(0)
+
+        corrupt_steps = [MerkleStep("left", "0" * 64)]
+        corrupt_proof = MerkleProof(
+            leaf_index=bundle.merkle_proof.leaf_index,
+            leaf_hash=bundle.merkle_proof.leaf_hash,
+            root_hash=bundle.merkle_proof.root_hash,
+            steps=corrupt_steps,
+        )
+        corrupt_bundle = ProofBundle(
+            schema_version=bundle.schema_version,
+            ledger_genesis=bundle.ledger_genesis,
+            chain_length=bundle.chain_length,
+            latest_hash=bundle.latest_hash,
+            merkle_root=bundle.merkle_root,
+            receipt=bundle.receipt,
+            merkle_proof=corrupt_proof,
+        )
+        valid, msg = corrupt_bundle.verify()
+        self.assertFalse(valid)
+        self.assertIn("Merkle audit path failed", msg)
 
     def test_out_of_range_index(self):
         with Ledger(self.db_path) as ledger:
