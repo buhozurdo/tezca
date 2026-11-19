@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tezca"
+version = "0.1.0"
+description = "Zero-dependency, hash-chained forensic ledger for AI agents."
+readme = "README.md"
+authors = [
+    { name = "Tezca Contributors" }
+]
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = []
+keywords = [
+    "ai",
+    "agent",
+    "audit",
+    "compliance",
+    "forensics",
+    "hash-chain",
+    "ledger",
+    "tamper-evident",
+    "llm",
+    "security"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Logging",
+]
+
+[project.scripts]
+tezca = "tezca.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["tezca*"]
