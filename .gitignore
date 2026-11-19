@@ -225,6 +225,9 @@ __marimo__/
 # Release guidelines (internal)
 RELEASE.md
 
+# Scratch files
+scratch/
+
 # Local test databases and logs
 *.db
 *.db-wal
