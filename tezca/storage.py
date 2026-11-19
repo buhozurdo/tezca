@@ -65,9 +65,21 @@ class SQLiteStorage(StorageBackend):
                     data_json TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    hash TEXT NOT NULL UNIQUE
+                    hash TEXT NOT NULL UNIQUE,
+                    signature TEXT,
+                    signer_id TEXT
                 );
             """)
+            # Auto-migrate v0.1.0 tables missing signature columns
+            try:
+                cur.execute("ALTER TABLE tezca_receipts ADD COLUMN signature TEXT;")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cur.execute("ALTER TABLE tezca_receipts ADD COLUMN signer_id TEXT;")
+            except sqlite3.OperationalError:
+                pass
+
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_tezca_agent
                 ON tezca_receipts(agent_id);
@@ -78,7 +90,9 @@ class SQLiteStorage(StorageBackend):
             """)
 
     def _row_to_receipt(self, row: tuple) -> Receipt:
-        idx, ts, agent, ev_type, data_raw, meta_raw, prev_h, h = row
+        idx, ts, agent, ev_type, data_raw, meta_raw, prev_h, h = row[:8]
+        sig = row[8] if len(row) > 8 else None
+        signer = row[9] if len(row) > 9 else None
         return Receipt(
             index=idx,
             timestamp=ts,
@@ -88,6 +102,8 @@ class SQLiteStorage(StorageBackend):
             metadata=json.loads(meta_raw),
             prev_hash=prev_h,
             hash=h,
+            signature=sig,
+            signer_id=signer,
         )
 
     def append(self, receipt: Receipt) -> None:
@@ -99,8 +115,9 @@ class SQLiteStorage(StorageBackend):
                 """
                 INSERT INTO tezca_receipts (
                     index_num, timestamp, agent_id, event_type,
-                    data_json, metadata_json, prev_hash, hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                    data_json, metadata_json, prev_hash, hash,
+                    signature, signer_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
                 (
                     receipt.index,
@@ -111,6 +128,8 @@ class SQLiteStorage(StorageBackend):
                     meta_json,
                     receipt.prev_hash,
                     receipt.hash,
+                    receipt.signature,
+                    receipt.signer_id,
                 ),
             )
 
@@ -120,7 +139,8 @@ class SQLiteStorage(StorageBackend):
             cur.execute(
                 """
                 SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash
+                       data_json, metadata_json, prev_hash, hash,
+                       signature, signer_id
                 FROM tezca_receipts
                 ORDER BY index_num DESC
                 LIMIT 1;
@@ -135,7 +155,8 @@ class SQLiteStorage(StorageBackend):
             cur.execute(
                 """
                 SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash
+                       data_json, metadata_json, prev_hash, hash,
+                       signature, signer_id
                 FROM tezca_receipts
                 WHERE index_num = ?;
                 """,
@@ -145,13 +166,13 @@ class SQLiteStorage(StorageBackend):
             return self._row_to_receipt(row) if row else None
 
     def iter_all(self) -> Iterator[Receipt]:
-        # Using a dedicated cursor to stream sequentially
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
                 """
                 SELECT index_num, timestamp, agent_id, event_type,
-                       data_json, metadata_json, prev_hash, hash
+                       data_json, metadata_json, prev_hash, hash,
+                       signature, signer_id
                 FROM tezca_receipts
                 ORDER BY index_num ASC;
                 """

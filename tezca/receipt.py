@@ -4,8 +4,10 @@ Immutable receipt representation for tezca forensic records.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 
 from tezca.canonical import canonical_dumps, compute_receipt_hash
 
@@ -14,6 +16,7 @@ from tezca.canonical import canonical_dumps, compute_receipt_hash
 class Receipt:
     """
     Cryptographically sealed receipt representing an immutable agent event.
+    Optionally signed with an HMAC or asymmetric key for non-repudiation.
     """
 
     index: int
@@ -24,6 +27,8 @@ class Receipt:
     metadata: dict[str, Any]
     prev_hash: str
     hash: str
+    signature: Optional[str] = None
+    signer_id: Optional[str] = None
 
     def verify_hash(self) -> bool:
         """
@@ -39,6 +44,22 @@ class Receipt:
             prev_hash=self.prev_hash,
         )
         return expected == self.hash
+
+    def compute_signature(self, secret_key: str | bytes) -> str:
+        """
+        Calculate the HMAC-SHA256 signature over this receipt's hash.
+        """
+        key_bytes = secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
+        return hmac.new(key_bytes, self.hash.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    def verify_signature(self, secret_key: str | bytes) -> bool:
+        """
+        Verify that this receipt's signature matches the secret key using constant-time comparison.
+        """
+        if not self.signature:
+            return False
+        expected = self.compute_signature(secret_key)
+        return hmac.compare_digest(self.signature, expected)
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -60,4 +81,6 @@ class Receipt:
             metadata=dict(d.get("metadata") or {}),
             prev_hash=str(d["prev_hash"]),
             hash=str(d["hash"]),
+            signature=d.get("signature"),
+            signer_id=d.get("signer_id"),
         )

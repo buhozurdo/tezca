@@ -118,6 +118,57 @@ tezca tail audit.db -n 5
 tezca export audit.db --output audit.jsonl
 ```
 
+### Export Standalone Cryptographic Proof (.tezcaproof)
+
+Export a portable proof bundle for a specific event (e.g. event #42) that compliance auditors can verify offline:
+
+```bash
+tezca proof audit.db 42 -o event_42.tezcaproof
+```
+
+### Verify an Offline Proof Bundle
+
+Verify proof bundles without access to the original SQLite database:
+
+```bash
+tezca verify-proof event_42.tezcaproof
+```
+
+Output:
+```text
+[OK] Proof verified: Receipt #42 is cryptographically sealed.
+[OK] Merkle Root: 0bc8e92e178936f47081d43e...
+[OK] Event Hash:  b51f283543dc5a13373e...
+```
+
+---
+
+## Merkle Trees & Cryptographic Non-Repudiation
+
+`tezca` supports binary Merkle trees for $O(\log N)$ batch verification and HMAC-SHA256 signature sealing:
+
+```python
+from tezca import Ledger, ProofBundle
+
+# Initialize with an optional secret key for HMAC non-repudiation
+ledger = Ledger("audit.db", secret_key="secure-hmac-key", signer_id="agent-01")
+
+# Record signed events
+receipt = ledger.record("agent-01", "tool_call", {"action": "wire_transfer", "amount": 5000})
+assert receipt.signature is not None
+
+# Query Merkle root over all recorded receipts
+print("Merkle Root:", ledger.merkle_root())
+
+# Export a portable, self-contained proof bundle
+bundle = ledger.export_proof(receipt.index, output_path="transfer.tezcaproof")
+
+# Verify offline anywhere
+loaded = ProofBundle.load("transfer.tezcaproof")
+valid, report = loaded.verify(secret_key="secure-hmac-key")
+assert valid
+```
+
 ---
 
 ## How It Works
@@ -136,6 +187,7 @@ Runnable scripts are provided in the `examples/` directory:
 * `examples/basic_usage.py`: Basic ledger initialization, recording prompt/tool/response events, and verification.
 * `examples/guardrails_and_tools.py`: Demonstrates compliance logging, safety guardrail verdicts, and blocked actions.
 * `examples/tamper_demonstration.py`: Simulates out-of-band tampering in SQLite and demonstrates automatic tamper detection.
+* `examples/merkle_and_proofs.py`: Demonstrates binary Merkle roots, HMAC-signed receipts, and standalone `.tezcaproof` export/verification.
 
 To run an example:
 ```bash

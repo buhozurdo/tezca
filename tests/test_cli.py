@@ -59,6 +59,22 @@ class TestCLI(unittest.TestCase):
         self.assertIn('"agent_id": "agent-cli"', output)
         self.assertIn('"event_type": "query"', output)
 
+    def test_cli_proof_and_verify_proof(self):
+        proof_file = Path(self.temp_dir.name) / "test_cli.tezcaproof"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["proof", str(self.db_path), "0", "-o", str(proof_file)])
+        self.assertEqual(code, 0)
+        self.assertTrue(proof_file.exists())
+        self.assertIn("[OK] Cryptographic proof bundle exported", buf.getvalue())
+
+        # Verify the exported proof file
+        buf_verify = io.StringIO()
+        with redirect_stdout(buf_verify):
+            code_verify = main(["verify-proof", str(proof_file)])
+        self.assertEqual(code_verify, 0)
+        self.assertIn("[OK] Proof verified: Receipt #0 is cryptographically sealed.", buf_verify.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
