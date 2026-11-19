@@ -221,3 +221,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Release guidelines (internal)
+RELEASE.md
+
+# Local test databases and logs
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
