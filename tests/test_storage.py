@@ -75,6 +75,8 @@ class TestStorage(unittest.TestCase):
         # Test reopening existing file and auto_flush
         storage2 = JSONLStorage(jsonl_path, auto_flush=True)
         self.assertIsNotNone(storage2.get_latest())
+        r2 = Receipt(2, "2026-01-01T00:00:02Z", "agent", "cont", {"v": 3}, {}, "b"*64, "c"*64)
+        storage2.append(r2)
         storage2.flush()
         storage2.close()
 
@@ -83,6 +85,7 @@ class TestStorage(unittest.TestCase):
         storage_missing.close()
         jsonl_path.unlink()
         self.assertEqual(list(storage_missing.iter_all()), [])
+        self.assertEqual(list(storage_missing.iter_raw()), [])
 
     def test_sqlite_migration_existing_table(self):
         db_path = Path(self.temp_dir.name) / "legacy.db"
