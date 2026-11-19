@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, Optional
 
 from tezca.canonical import GENESIS_HASH, canonical_dumps, compute_receipt_hash
+from tezca.merkle import MerkleProof, MerkleTree
 from tezca.receipt import Receipt
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
@@ -130,6 +131,21 @@ class Ledger:
         """Retrieve the last n recorded receipts."""
         all_receipts = list(self.storage.iter_all())
         return all_receipts[-n:] if n > 0 else []
+
+    def merkle_tree(self) -> MerkleTree:
+        """Construct a Merkle tree over all recorded receipts."""
+        return MerkleTree(list(self.storage.iter_all()))
+
+    def merkle_root(self) -> str:
+        """Return the current Merkle root hash of the ledger."""
+        return self.merkle_tree().root
+
+    def get_merkle_proof(self, index: int) -> MerkleProof:
+        """
+        Generate a verifiable Merkle membership proof for receipt at index.
+        """
+        tree = self.merkle_tree()
+        return tree.get_proof(index)
 
     def __iter__(self) -> Iterator[Receipt]:
         return self.storage.iter_all()
