@@ -4,7 +4,6 @@ Zero-dependency interceptors and decorators for OpenAI, Anthropic, and custom ag
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import inspect
 import time
@@ -13,6 +12,32 @@ from typing import Any, Callable, Iterator, Optional
 
 from tezca.events import AgentEventType
 from tezca.ledger import Ledger
+
+
+def _log_tool_invocation(ledger: Ledger, agent_id: str, tool_name: str, args: Any, kwargs: Any) -> None:
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.TOOL_CALL.value,
+        data={"tool": tool_name, "arguments": {"args": args, "kwargs": kwargs}},
+    )
+
+
+def _log_tool_success(ledger: Ledger, agent_id: str, tool_name: str, result: Any, elapsed_ms: float) -> None:
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.TOOL_RESULT.value,
+        data={"tool": tool_name, "result": result},
+        metadata={"latency_ms": round(elapsed_ms, 2)},
+    )
+
+
+def _log_tool_failure(ledger: Ledger, agent_id: str, tool_name: str, ex: Exception, elapsed_ms: float) -> None:
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.ERROR.value,
+        data={"tool": tool_name, "error_type": type(ex).__name__, "error": str(ex)},
+        metadata={"latency_ms": round(elapsed_ms, 2)},
+    )
 
 
 def wrap_tool(
@@ -33,31 +58,14 @@ def wrap_tool(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                bound_args = {"args": args, "kwargs": kwargs}
-                ledger.record(
-                    agent_id=agent_id,
-                    event_type=AgentEventType.TOOL_CALL.value,
-                    data={"tool": name, "arguments": bound_args},
-                )
+                _log_tool_invocation(ledger, agent_id, name, args, kwargs)
                 start = time.perf_counter()
                 try:
-                    result = await fn(*args, **kwargs)
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.TOOL_RESULT.value,
-                        data={"tool": name, "result": result},
-                        metadata={"latency_ms": round(elapsed, 2)},
-                    )
-                    return result
+                    res = await fn(*args, **kwargs)
+                    _log_tool_success(ledger, agent_id, name, res, (time.perf_counter() - start) * 1000.0)
+                    return res
                 except Exception as ex:
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.ERROR.value,
-                        data={"tool": name, "error_type": type(ex).__name__, "error": str(ex)},
-                        metadata={"latency_ms": round(elapsed, 2)},
-                    )
+                    _log_tool_failure(ledger, agent_id, name, ex, (time.perf_counter() - start) * 1000.0)
                     raise
 
             return async_wrapper
@@ -66,36 +74,58 @@ def wrap_tool(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                bound_args = {"args": args, "kwargs": kwargs}
-                ledger.record(
-                    agent_id=agent_id,
-                    event_type=AgentEventType.TOOL_CALL.value,
-                    data={"tool": name, "arguments": bound_args},
-                )
+                _log_tool_invocation(ledger, agent_id, name, args, kwargs)
                 start = time.perf_counter()
                 try:
-                    result = fn(*args, **kwargs)
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.TOOL_RESULT.value,
-                        data={"tool": name, "result": result},
-                        metadata={"latency_ms": round(elapsed, 2)},
-                    )
-                    return result
+                    res = fn(*args, **kwargs)
+                    _log_tool_success(ledger, agent_id, name, res, (time.perf_counter() - start) * 1000.0)
+                    return res
                 except Exception as ex:
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.ERROR.value,
-                        data={"tool": name, "error_type": type(ex).__name__, "error": str(ex)},
-                        metadata={"latency_ms": round(elapsed, 2)},
-                    )
+                    _log_tool_failure(ledger, agent_id, name, ex, (time.perf_counter() - start) * 1000.0)
                     raise
 
             return sync_wrapper
 
     return decorator
+
+
+def _log_completion_prompt(ledger: Ledger, agent_id: str, default_model: Optional[str], args: Any, kwargs: Any) -> str:
+    messages = kwargs.get("messages") or kwargs.get("prompt") or args
+    model = kwargs.get("model") or default_model or "unknown"
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.PROMPT.value,
+        data={"messages": messages, "model": model},
+    )
+    return str(model)
+
+
+def _log_completion_success(
+    ledger: Ledger, agent_id: str, response: Any, model: str, elapsed_ms: float
+) -> None:
+    usage = getattr(response, "usage", None)
+    usage_dict = usage if isinstance(usage, dict) else (usage.__dict__ if hasattr(usage, "__dict__") else None)
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.COMPLETION.value,
+        data={"response": str(response)},
+        metadata={
+            "model": model,
+            "latency_ms": round(elapsed_ms, 2),
+            "token_usage": usage_dict,
+        },
+    )
+
+
+def _log_completion_failure(
+    ledger: Ledger, agent_id: str, ex: Exception, model: str, elapsed_ms: float
+) -> None:
+    ledger.record(
+        agent_id=agent_id,
+        event_type=AgentEventType.ERROR.value,
+        data={"error_type": type(ex).__name__, "error": str(ex)},
+        metadata={"model": model, "latency_ms": round(elapsed_ms, 2)},
+    )
 
 
 def wrap_completion(
@@ -113,39 +143,14 @@ def wrap_completion(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                messages = kwargs.get("messages") or kwargs.get("prompt") or args
-                used_model = kwargs.get("model") or model or "unknown"
-                ledger.record(
-                    agent_id=agent_id,
-                    event_type=AgentEventType.PROMPT.value,
-                    data={"messages": messages, "model": used_model},
-                )
+                used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
                 start = time.perf_counter()
                 try:
-                    response = await fn(*args, **kwargs)
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    usage = getattr(response, "usage", None)
-                    usage_dict = usage if isinstance(usage, dict) else (usage.__dict__ if hasattr(usage, "__dict__") else None)
-
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.COMPLETION.value,
-                        data={"response": str(response)},
-                        metadata={
-                            "model": used_model,
-                            "latency_ms": round(elapsed, 2),
-                            "token_usage": usage_dict,
-                        },
-                    )
-                    return response
+                    resp = await fn(*args, **kwargs)
+                    _log_completion_success(ledger, agent_id, resp, used_model, (time.perf_counter() - start) * 1000.0)
+                    return resp
                 except Exception as ex:
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.ERROR.value,
-                        data={"error_type": type(ex).__name__, "error": str(ex)},
-                        metadata={"model": used_model, "latency_ms": round(elapsed, 2)},
-                    )
+                    _log_completion_failure(ledger, agent_id, ex, used_model, (time.perf_counter() - start) * 1000.0)
                     raise
 
             return async_wrapper
@@ -154,39 +159,14 @@ def wrap_completion(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                messages = kwargs.get("messages") or kwargs.get("prompt") or args
-                used_model = kwargs.get("model") or model or "unknown"
-                ledger.record(
-                    agent_id=agent_id,
-                    event_type=AgentEventType.PROMPT.value,
-                    data={"messages": messages, "model": used_model},
-                )
+                used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
                 start = time.perf_counter()
                 try:
-                    response = fn(*args, **kwargs)
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    usage = getattr(response, "usage", None)
-                    usage_dict = usage if isinstance(usage, dict) else (usage.__dict__ if hasattr(usage, "__dict__") else None)
-
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.COMPLETION.value,
-                        data={"response": str(response)},
-                        metadata={
-                            "model": used_model,
-                            "latency_ms": round(elapsed, 2),
-                            "token_usage": usage_dict,
-                        },
-                    )
-                    return response
+                    resp = fn(*args, **kwargs)
+                    _log_completion_success(ledger, agent_id, resp, used_model, (time.perf_counter() - start) * 1000.0)
+                    return resp
                 except Exception as ex:
-                    elapsed = (time.perf_counter() - start) * 1000.0
-                    ledger.record(
-                        agent_id=agent_id,
-                        event_type=AgentEventType.ERROR.value,
-                        data={"error_type": type(ex).__name__, "error": str(ex)},
-                        metadata={"model": used_model, "latency_ms": round(elapsed, 2)},
-                    )
+                    _log_completion_failure(ledger, agent_id, ex, used_model, (time.perf_counter() - start) * 1000.0)
                     raise
 
             return sync_wrapper
