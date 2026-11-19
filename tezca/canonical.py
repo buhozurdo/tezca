@@ -12,21 +12,22 @@ from typing import Any
 
 GENESIS_HASH = "0" * 64
 
+_CANONICAL_ENCODER = json.JSONEncoder(
+    sort_keys=True,
+    separators=(",", ":"),
+    ensure_ascii=False,
+    default=str,
+)
+
 
 def canonical_dumps(obj: Any) -> str:
     """
-    Produce a deterministic, compact JSON string.
+    Produce a deterministic, compact JSON string using cached stdlib encoder.
     
     Keys are sorted lexicographically, separators are minimal without spaces,
     and non-string keys/types fallback cleanly.
     """
-    return json.dumps(
-        obj,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    )
+    return _CANONICAL_ENCODER.encode(obj)
 
 
 def compute_receipt_hash(

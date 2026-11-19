@@ -12,6 +12,14 @@ from typing import Any, Optional
 from tezca.canonical import canonical_dumps, compute_receipt_hash
 
 
+def compute_hmac_signature(receipt_hash: str, secret_key: str | bytes) -> str:
+    """
+    Calculate HMAC-SHA256 signature directly over a receipt hash without object instantiation.
+    """
+    key_bytes = secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
+    return hmac.new(key_bytes, receipt_hash.encode("ascii"), hashlib.sha256).hexdigest()
+
+
 @dataclass(frozen=True)
 class Receipt:
     """
@@ -49,8 +57,7 @@ class Receipt:
         """
         Calculate the HMAC-SHA256 signature over this receipt's hash.
         """
-        key_bytes = secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
-        return hmac.new(key_bytes, self.hash.encode("utf-8"), hashlib.sha256).hexdigest()
+        return compute_hmac_signature(self.hash, secret_key)
 
     def verify_signature(self, secret_key: str | bytes) -> bool:
         """

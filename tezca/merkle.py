@@ -17,7 +17,7 @@ def hash_pair(left: str, right: str) -> str:
     Compute deterministic SHA-256 of two hashes.
     Uses colon separator to prevent second pre-image length ambiguities.
     """
-    payload = f"{left}:{right}".encode("utf-8")
+    payload = f"{left}:{right}".encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 

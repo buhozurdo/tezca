@@ -4,6 +4,7 @@ Core Ledger implementation managing hash-chained audit trails.
 
 from __future__ import annotations
 
+import hmac
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional, Union
@@ -12,7 +13,7 @@ from tezca.canonical import GENESIS_HASH, canonical_dumps, compute_receipt_hash
 from tezca.events import AgentEvent
 from tezca.merkle import MerkleProof, MerkleTree
 from tezca.proof import ProofBundle
-from tezca.receipt import Receipt
+from tezca.receipt import Receipt, compute_hmac_signature
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
 
@@ -79,17 +80,7 @@ class Ledger:
 
         receipt_sig = None
         if effective_key is not None:
-            dummy = Receipt(
-                index=index,
-                timestamp=ts,
-                agent_id=agent_id,
-                event_type=event_type,
-                data=data,
-                metadata=meta,
-                prev_hash=prev_hash,
-                hash=receipt_hash,
-            )
-            receipt_sig = dummy.compute_signature(effective_key)
+            receipt_sig = compute_hmac_signature(receipt_hash, effective_key)
 
         receipt = Receipt(
             index=index,
@@ -101,7 +92,7 @@ class Ledger:
             prev_hash=prev_hash,
             hash=receipt_hash,
             signature=receipt_sig,
-            signer_id=effective_signer,
+            signer_id=effective_signer if receipt_sig is not None else None,
         )
 
         self.storage.append(receipt)
@@ -131,58 +122,62 @@ class Ledger:
     def verify(self, secret_key: Optional[Union[str, bytes]] = None) -> tuple[bool, dict[str, Any]]:
         """
         Verify the mathematical integrity of the entire ledger hash chain.
-        Optionally verifies HMAC signatures on all receipts if a secret_key is supplied.
+        Fast-paths verification using raw stored canonical fields without JSON deserialization overhead.
+        Early exits immediately on any detected anomaly or tamper attempt.
         """
         count = 0
         expected_prev_hash = GENESIS_HASH
         latest_hash: Optional[str] = None
         effective_key = secret_key if secret_key is not None else self.secret_key
 
-        for idx, receipt in enumerate(self.storage.iter_all()):
-            # 1. Sequential index check
-            if receipt.index != idx:
+        for idx, row in enumerate(self.storage.iter_raw()):
+            idx_num, ts, agent, ev_type, data_raw, meta_raw, prev_h, h, sig, signer = row[:10]
+            if idx_num != idx:
                 return False, {
                     "verified_events": count,
-                    "failed_at_index": receipt.index,
-                    "error": f"Index sequence mismatch: expected {idx}, got {receipt.index}",
+                    "failed_at_index": idx_num,
+                    "error": f"Index sequence mismatch: expected {idx}, got {idx_num}",
                 }
-
-            # 2. Previous hash link check
-            if receipt.prev_hash != expected_prev_hash:
+            if prev_h != expected_prev_hash:
                 return False, {
                     "verified_events": count,
-                    "failed_at_index": receipt.index,
+                    "failed_at_index": idx_num,
                     "error": "Previous hash link broken",
                     "expected_prev_hash": expected_prev_hash,
-                    "actual_prev_hash": receipt.prev_hash,
+                    "actual_prev_hash": prev_h,
                 }
-
-            # 3. Payload integrity check (recomputes SHA-256)
-            if not receipt.verify_hash():
+            calc_h = compute_receipt_hash(
+                index=idx_num,
+                timestamp=ts,
+                agent_id=agent,
+                event_type=ev_type,
+                canonical_data=data_raw,
+                canonical_metadata=meta_raw,
+                prev_hash=prev_h,
+            )
+            if calc_h != h:
                 return False, {
                     "verified_events": count,
-                    "failed_at_index": receipt.index,
+                    "failed_at_index": idx_num,
                     "error": "Hash integrity failed (payload altered)",
-                    "recorded_hash": receipt.hash,
+                    "recorded_hash": h,
                 }
-
-            # 4. Signature verification check (if required)
             if effective_key is not None:
-                if not receipt.signature:
+                if not sig:
                     return False, {
                         "verified_events": count,
-                        "failed_at_index": receipt.index,
+                        "failed_at_index": idx_num,
                         "error": "Missing receipt signature under signed verification policy",
                     }
-                if not receipt.verify_signature(effective_key):
+                expected_sig = compute_hmac_signature(h, effective_key)
+                if not hmac.compare_digest(sig, expected_sig):
                     return False, {
                         "verified_events": count,
-                        "failed_at_index": receipt.index,
+                        "failed_at_index": idx_num,
                         "error": "Invalid cryptographic signature",
                     }
-
-            expected_prev_hash = receipt.hash
-            latest_hash = receipt.hash
+            expected_prev_hash = h
+            latest_hash = h
             count += 1
 
         return True, {
@@ -197,8 +192,7 @@ class Ledger:
 
     def tail(self, n: int = 10) -> list[Receipt]:
         """Retrieve the last n recorded receipts."""
-        all_receipts = list(self.storage.iter_all())
-        return all_receipts[-n:] if n > 0 else []
+        return self.storage.get_tail(n)
 
     def merkle_tree(self) -> MerkleTree:
         """Construct a Merkle tree over all recorded receipts."""
@@ -221,11 +215,11 @@ class Ledger:
         output_path: Optional[Union[str, Path]] = None,
     ) -> ProofBundle:
         """
-        Export a standalone, self-contained cryptographic proof bundle (.tezcaproof).
+        Generate and package a standalone verifiable cryptographic proof bundle (.tezcaproof).
         """
         receipt = self.storage.get_by_index(index)
         if receipt is None:
-            raise IndexError(f"Receipt at index {index} not found in ledger")
+            raise IndexError(f"Receipt at index {index} does not exist in ledger.")
 
         merkle_proof = self.get_merkle_proof(index)
         latest = self.storage.get_latest()
