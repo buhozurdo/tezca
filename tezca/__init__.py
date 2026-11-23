@@ -16,7 +16,7 @@ from tezca.receipt import Receipt
 from tezca.report import ComplianceEvaluation, ComplianceReport, generate_compliance_report
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
-__version__ = "0.4.0b0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AgentEvent",
