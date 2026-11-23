@@ -225,6 +225,31 @@ tezca verify-proof event_42.tezcaproof
 [OK] Event Hash:  b51f283543dc5a13373e...
 ```
 
+### Generate Regulatory Compliance Audit Reports (HTML & JSON)
+Generate formal audit evidence for EU AI Act, SOC 2 Type II, and HIPAA compliance:
+```bash
+# Generate self-contained HTML executive audit report
+tezca report audit.db -o compliance_report.html
+
+# Generate structured JSON for SIEM ingestion (Splunk, Datadog)
+tezca report audit.db --format json -o audit_evidence.json
+```
+
+### Compare Distributed Replicas & Detect Split-Chain Forks
+Forensically detect split-brain forks, replay attacks, and divergent branches across distributed agent replicas:
+```bash
+tezca compare primary_cluster.db edge_replica.db
+```
+```text
+Status:             FORKED
+Compatible:         NO
+Fork Detected:      YES
+Genesis Match:      YES
+Common Ancestor:    #41 (a0bc7b4f1beb2dfd...)
+Divergence Index:   #42
+Summary:            FORK DETECTED at index #42! Common ancestor: #41 (a0bc7b4f1beb2dfd...).
+```
+
 ---
 
 ## Cryptographic Guarantees & Non-Repudiation

@@ -7,7 +7,10 @@ from __future__ import annotations
 import hmac
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
+
+if TYPE_CHECKING:
+    from tezca.fork import ForkReport
 
 from tezca.canonical import GENESIS_HASH, canonical_dumps, compute_receipt_hash
 from tezca.events import AgentEvent
@@ -240,6 +243,20 @@ class Ledger:
             bundle.save(output_path)
 
         return bundle
+
+    def compare_with(self, other: Ledger) -> ForkReport:
+        """
+        Forensically compare this ledger against another replica to detect forks or divergence.
+        """
+        from tezca.fork import detect_fork
+
+        return detect_fork(self, other)
+
+    def detect_fork(self, other: Ledger) -> ForkReport:
+        """
+        Alias for compare_with.
+        """
+        return self.compare_with(other)
 
     def __iter__(self) -> Iterator[Receipt]:
         return self.storage.iter_all()
