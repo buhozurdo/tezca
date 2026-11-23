@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you use tezca in your research or autonomous agent infrastructure, please cite it as below."
+authors:
+  - family-names: "Corrales"
+    given-names: "Rael"
+    email: "raelcorrales@gmail.com"
+title: "tezca: Zero-Dependency Cryptographic Forensic Ledger for Autonomous AI Agents"
+version: 0.3.0
+date-released: 2026-11-19
+url: "https://github.com/buhozurdo/tezca"
+repository-code: "https://github.com/buhozurdo/tezca"
+license: "Apache-2.0"
+keywords:
+  - "ai-agents"
+  - "cryptographic-ledger"
+  - "audit-log"
+  - "merkle-tree"
+  - "hash-chain"
+  - "compliance"
+  - "eu-ai-act"
+  - "soc2"
+  - "non-repudiation"

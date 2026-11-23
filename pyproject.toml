@@ -23,7 +23,14 @@ keywords = [
     "ledger",
     "tamper-evident",
     "llm",
-    "security"
+    "security",
+    "merkle-tree",
+    "non-repudiation",
+    "eu-ai-act",
+    "soc2",
+    "langchain",
+    "langgraph",
+    "sqlite-wal"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -48,3 +55,6 @@ tezca = "tezca.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tezca*"]
+
+[tool.setuptools.package-data]
+tezca = ["py.typed"]
