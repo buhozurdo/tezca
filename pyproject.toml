@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tezca"
-version = "0.3.0"
+version = "0.4.0"
 description = "Zero-dependency, hash-chained forensic ledger for AI agents."
 readme = "README.md"
 authors = [
@@ -23,7 +23,14 @@ keywords = [
     "ledger",
     "tamper-evident",
     "llm",
-    "security"
+    "security",
+    "merkle-tree",
+    "non-repudiation",
+    "eu-ai-act",
+    "soc2",
+    "langchain",
+    "langgraph",
+    "sqlite-wal"
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -48,3 +55,12 @@ tezca = "tezca.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["tezca*"]
+
+[tool.setuptools.package-data]
+tezca = ["py.typed"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]

@@ -209,6 +209,125 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Failed to export proof", err_buf.getvalue())
 
+    def test_cli_report_html_and_json(self):
+        html_out = Path(self.temp_dir.name) / "compliance.html"
+        json_out = Path(self.temp_dir.name) / "compliance.json"
+
+        # 1. HTML generation to file
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_html = main(["report", str(self.db_path), "-o", str(html_out)])
+        self.assertEqual(code_html, 0)
+        self.assertTrue(html_out.exists())
+        self.assertIn("<!DOCTYPE html>", html_out.read_text(encoding="utf-8"))
+
+        # 2. JSON generation to file with auto-detected .json extension
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_json = main(["report", str(self.db_path), "-o", str(json_out)])
+        self.assertEqual(code_json, 0)
+        self.assertTrue(json_out.exists())
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        self.assertEqual(data["total_events"], 2)
+        self.assertTrue(data["is_valid"])
+
+        # 3. JSON to stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_stdout = main(["report", str(self.db_path), "--format", "json"])
+        self.assertEqual(code_stdout, 0)
+        stdout_data = json.loads(buf.getvalue())
+        self.assertEqual(stdout_data["total_events"], 2)
+
+        # 4. Non-existent file
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code_missing = main(["report", "missing_ledger.db"])
+        self.assertEqual(code_missing, 1)
+        self.assertIn("not found", err_buf.getvalue())
+
+    def test_cli_report_tampered_fails(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE tezca_receipts SET data_json = '{\"bad\": true}' WHERE index_num = 1;")
+        conn.commit()
+        conn.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["report", str(self.db_path)])
+        self.assertEqual(code, 1)
+
+    def test_cli_report_unexpected_exception(self):
+        import unittest.mock
+        with unittest.mock.patch("tezca.cli.generate_compliance_report", side_effect=RuntimeError("report err")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(["report", str(self.db_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("Failed to generate compliance report", err_buf.getvalue())
+
+    def test_cli_compare_identical_and_output(self):
+        import shutil
+        replica_path = Path(self.temp_dir.name) / "replica.db"
+        shutil.copyfile(self.db_path, replica_path)
+
+        # stdout text
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["compare", str(self.db_path), str(replica_path)])
+        self.assertEqual(code, 0)
+        self.assertIn("Status:             IDENTICAL", buf.getvalue())
+        self.assertIn("Compatible:         YES", buf.getvalue())
+
+        # output file json
+        out_json = Path(self.temp_dir.name) / "compare.json"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_json = main(["compare", str(self.db_path), str(replica_path), "-o", str(out_json)])
+        self.assertEqual(code_json, 0)
+        self.assertTrue(out_json.exists())
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "identical")
+
+    def test_cli_compare_forked(self):
+        import dataclasses
+        replica_path = Path(self.temp_dir.name) / "forked_replica.db"
+        with Ledger(replica_path) as repl, Ledger(self.db_path) as prim:
+            repl.record("agent-x", "divergent", {"rogue": True})
+            # Replay receipt from prim at index 1
+            prim_r1 = prim.storage.get_by_index(1)
+            assert prim_r1 is not None
+            repl.storage.append(dataclasses.replace(prim_r1, index=1))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["compare", str(self.db_path), str(replica_path)])
+        self.assertEqual(code, 1)
+        self.assertIn("Fork Detected:      YES", buf.getvalue())
+        self.assertIn("Replay Detected:    YES", buf.getvalue())
+
+    def test_cli_compare_missing_files_and_error(self):
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            c1 = main(["compare", "missing_p.db", str(self.db_path)])
+        self.assertEqual(c1, 1)
+        self.assertIn("Primary ledger file not found", err_buf.getvalue())
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            c2 = main(["compare", str(self.db_path), "missing_r.db"])
+        self.assertEqual(c2, 1)
+        self.assertIn("Replica ledger file not found", err_buf.getvalue())
+
+        import unittest.mock
+        with unittest.mock.patch("tezca.ledger.Ledger.compare_with", side_effect=RuntimeError("comp crash")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                c3 = main(["compare", str(self.db_path), str(self.db_path)])
+            self.assertEqual(c3, 1)
+            self.assertIn("Comparison failed", err_buf.getvalue())
+
     def test_cli_direct_main_call(self):
         import runpy
         old_argv = sys.argv
