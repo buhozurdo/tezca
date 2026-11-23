@@ -267,6 +267,67 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Failed to generate compliance report", err_buf.getvalue())
 
+    def test_cli_compare_identical_and_output(self):
+        import shutil
+        replica_path = Path(self.temp_dir.name) / "replica.db"
+        shutil.copyfile(self.db_path, replica_path)
+
+        # stdout text
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["compare", str(self.db_path), str(replica_path)])
+        self.assertEqual(code, 0)
+        self.assertIn("Status:             IDENTICAL", buf.getvalue())
+        self.assertIn("Compatible:         YES", buf.getvalue())
+
+        # output file json
+        out_json = Path(self.temp_dir.name) / "compare.json"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_json = main(["compare", str(self.db_path), str(replica_path), "-o", str(out_json)])
+        self.assertEqual(code_json, 0)
+        self.assertTrue(out_json.exists())
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+        self.assertEqual(data["status"], "identical")
+
+    def test_cli_compare_forked(self):
+        import dataclasses
+        replica_path = Path(self.temp_dir.name) / "forked_replica.db"
+        with Ledger(replica_path) as repl, Ledger(self.db_path) as prim:
+            repl.record("agent-x", "divergent", {"rogue": True})
+            # Replay receipt from prim at index 1
+            prim_r1 = prim.storage.get_by_index(1)
+            assert prim_r1 is not None
+            repl.storage.append(dataclasses.replace(prim_r1, index=1))
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["compare", str(self.db_path), str(replica_path)])
+        self.assertEqual(code, 1)
+        self.assertIn("Fork Detected:      YES", buf.getvalue())
+        self.assertIn("Replay Detected:    YES", buf.getvalue())
+
+    def test_cli_compare_missing_files_and_error(self):
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            c1 = main(["compare", "missing_p.db", str(self.db_path)])
+        self.assertEqual(c1, 1)
+        self.assertIn("Primary ledger file not found", err_buf.getvalue())
+
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            c2 = main(["compare", str(self.db_path), "missing_r.db"])
+        self.assertEqual(c2, 1)
+        self.assertIn("Replica ledger file not found", err_buf.getvalue())
+
+        import unittest.mock
+        with unittest.mock.patch("tezca.ledger.Ledger.compare_with", side_effect=RuntimeError("comp crash")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                c3 = main(["compare", str(self.db_path), str(self.db_path)])
+            self.assertEqual(c3, 1)
+            self.assertIn("Comparison failed", err_buf.getvalue())
+
     def test_cli_direct_main_call(self):
         import runpy
         old_argv = sys.argv

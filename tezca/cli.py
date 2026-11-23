@@ -183,6 +183,63 @@ def cmd_report(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    primary_path = Path(args.primary)
+    replica_path = Path(args.replica)
+
+    if not primary_path.exists():
+        print(f"[ERROR] Primary ledger file not found: {primary_path}", file=sys.stderr)
+        return 1
+    if not replica_path.exists():
+        print(f"[ERROR] Replica ledger file not found: {replica_path}", file=sys.stderr)
+        return 1
+
+    try:
+        with Ledger(primary_path) as p_ledger, Ledger(replica_path) as r_ledger:
+            report = p_ledger.compare_with(r_ledger)
+
+        fmt = (args.format or "").lower()
+        if not fmt:
+            if args.output and args.output.lower().endswith(".json"):
+                fmt = "json"
+            else:
+                fmt = "text"
+
+        if fmt == "json":
+            content = report.to_json(indent=2)
+        else:
+            lines = [
+                f"Status:             {report.status.upper()}",
+                f"Compatible:         {'YES' if report.is_compatible else 'NO'}",
+                f"Fork Detected:      {'YES' if report.is_forked else 'NO'}",
+                f"Genesis Match:      {'YES' if report.genesis_match else 'NO'}",
+                f"Primary Length:     {report.primary_length:,} events",
+                f"Replica Length:     {report.replica_length:,} events",
+            ]
+            if report.common_ancestor_index is not None:
+                tip = (report.common_ancestor_hash or "")[:16]
+                lines.append(f"Common Ancestor:    #{report.common_ancestor_index} ({tip}...)")
+            if report.divergence_index is not None:
+                lines.append(f"Divergence Index:   #{report.divergence_index}")
+                lines.append(f"Primary Div Hash:   {report.primary_divergent_hash}")
+                lines.append(f"Replica Div Hash:   {report.replica_divergent_hash}")
+            if report.replay_detected:
+                lines.append(f"Replay Detected:    YES (Indices: {report.replayed_indices})")
+            lines.append(f"Summary:            {report.summary()}")
+            content = "\n".join(lines)
+
+        if args.output:
+            Path(args.output).write_text(content, encoding="utf-8")
+            print(f"[OK] Comparison report written to {args.output}")
+        else:
+            print(content)
+
+        return 0 if report.is_compatible else 1
+    except Exception as exc:
+        print(f"[ERROR] Comparison failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tezca",
@@ -235,6 +292,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--format", choices=["html", "json"], help="Report output format (html, json)")
     p_report.add_argument("--secret-key", help="Optional secret key to verify signatures in report")
     p_report.set_defaults(func=cmd_report)
+
+    # compare
+    p_comp = subparsers.add_parser("compare", help="Compare two ledgers to detect forks and split-chain anomalies.")
+    p_comp.add_argument("primary", help="Path to authoritative primary ledger")
+    p_comp.add_argument("replica", help="Path to replica ledger to compare")
+    p_comp.add_argument("-o", "--output", help="Output file path (default: stdout)")
+    p_comp.add_argument("--format", choices=["text", "json"], help="Comparison format (text, json)")
+    p_comp.set_defaults(func=cmd_compare)
 
     return parser
 
