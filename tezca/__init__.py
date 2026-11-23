@@ -12,13 +12,16 @@ from tezca.ledger import Ledger
 from tezca.merkle import MerkleProof, MerkleStep, MerkleTree
 from tezca.proof import PROOF_SCHEMA_VERSION, ProofBundle
 from tezca.receipt import Receipt
+from tezca.report import ComplianceEvaluation, ComplianceReport, generate_compliance_report
 from tezca.storage import JSONLStorage, SQLiteStorage, StorageBackend
 
-__version__ = "0.3.0"
+__version__ = "0.4.0a0"
 
 __all__ = [
     "AgentEvent",
     "AgentEventType",
+    "ComplianceEvaluation",
+    "ComplianceReport",
     "GENESIS_HASH",
     "JSONLStorage",
     "Ledger",
@@ -34,6 +37,7 @@ __all__ = [
     "__version__",
     "canonical_dumps",
     "compute_receipt_hash",
+    "generate_compliance_report",
     "track_agent_call",
     "wrap_completion",
     "wrap_tool",

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from tezca.ledger import Ledger
 from tezca.proof import ProofBundle
+from tezca.report import generate_compliance_report
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
@@ -149,6 +150,39 @@ def cmd_verify_proof(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    path = Path(args.ledger)
+    if not path.exists():
+        print(f"[ERROR] Ledger file not found: {path}", file=sys.stderr)
+        return 1
+
+    try:
+        with Ledger(path, secret_key=args.secret_key) as ledger:
+            report = generate_compliance_report(ledger, secret_key=args.secret_key)
+
+        fmt = (args.format or "").lower()
+        if not fmt:
+            if args.output and args.output.lower().endswith(".json"):
+                fmt = "json"
+            else:
+                fmt = "html"
+
+        content = report.to_json(indent=2) if fmt == "json" else report.to_html()
+
+        if args.output:
+            out_path = Path(args.output)
+            out_path.write_text(content, encoding="utf-8")
+            status_label = "VALID" if report.is_valid else "FAILED"
+            print(f"[OK] Compliance report generated ({fmt.upper()}): {out_path} [Status: {status_label}]")
+        else:
+            print(content)
+
+        return 0 if report.is_valid else 1
+    except Exception as exc:
+        print(f"[ERROR] Failed to generate compliance report: {exc}", file=sys.stderr)
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tezca",
@@ -193,6 +227,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_vproof.add_argument("proof_file", help="Path to .tezcaproof file")
     p_vproof.add_argument("--secret-key", help="Optional secret key to verify HMAC signature")
     p_vproof.set_defaults(func=cmd_verify_proof)
+
+    # report
+    p_report = subparsers.add_parser("report", help="Generate compliance and forensic audit reports (HTML or JSON).")
+    p_report.add_argument("ledger", help="Path to audit.db or audit.jsonl")
+    p_report.add_argument("-o", "--output", help="Output file path (default: stdout or report.html)")
+    p_report.add_argument("--format", choices=["html", "json"], help="Report output format (html, json)")
+    p_report.add_argument("--secret-key", help="Optional secret key to verify signatures in report")
+    p_report.set_defaults(func=cmd_report)
 
     return parser
 

@@ -209,6 +209,64 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("Failed to export proof", err_buf.getvalue())
 
+    def test_cli_report_html_and_json(self):
+        html_out = Path(self.temp_dir.name) / "compliance.html"
+        json_out = Path(self.temp_dir.name) / "compliance.json"
+
+        # 1. HTML generation to file
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_html = main(["report", str(self.db_path), "-o", str(html_out)])
+        self.assertEqual(code_html, 0)
+        self.assertTrue(html_out.exists())
+        self.assertIn("<!DOCTYPE html>", html_out.read_text(encoding="utf-8"))
+
+        # 2. JSON generation to file with auto-detected .json extension
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_json = main(["report", str(self.db_path), "-o", str(json_out)])
+        self.assertEqual(code_json, 0)
+        self.assertTrue(json_out.exists())
+        data = json.loads(json_out.read_text(encoding="utf-8"))
+        self.assertEqual(data["total_events"], 2)
+        self.assertTrue(data["is_valid"])
+
+        # 3. JSON to stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code_stdout = main(["report", str(self.db_path), "--format", "json"])
+        self.assertEqual(code_stdout, 0)
+        stdout_data = json.loads(buf.getvalue())
+        self.assertEqual(stdout_data["total_events"], 2)
+
+        # 4. Non-existent file
+        err_buf = io.StringIO()
+        with redirect_stderr(err_buf):
+            code_missing = main(["report", "missing_ledger.db"])
+        self.assertEqual(code_missing, 1)
+        self.assertIn("not found", err_buf.getvalue())
+
+    def test_cli_report_tampered_fails(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE tezca_receipts SET data_json = '{\"bad\": true}' WHERE index_num = 1;")
+        conn.commit()
+        conn.close()
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(["report", str(self.db_path)])
+        self.assertEqual(code, 1)
+
+    def test_cli_report_unexpected_exception(self):
+        import unittest.mock
+        with unittest.mock.patch("tezca.cli.generate_compliance_report", side_effect=RuntimeError("report err")):
+            err_buf = io.StringIO()
+            with redirect_stderr(err_buf):
+                code = main(["report", str(self.db_path)])
+            self.assertEqual(code, 1)
+            self.assertIn("Failed to generate compliance report", err_buf.getvalue())
+
     def test_cli_direct_main_call(self):
         import runpy
         old_argv = sys.argv
