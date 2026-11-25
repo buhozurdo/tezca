@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import random
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator, Optional
@@ -44,11 +45,14 @@ def wrap_tool(
     ledger: Ledger,
     agent_id: str = "tool-runner",
     tool_name: Optional[str] = None,
+    log_invocation: bool = True,
+    sample_rate: float = 1.0,
 ) -> Callable:
     """
     Decorator for Python tool functions and agent actions.
     Automatically captures arguments, execution latency, and return values/exceptions.
     Supports both synchronous and asynchronous functions.
+    Allows disabling tool_call invocation logging (recording only tool_result) and configurable sampling.
     """
 
     def decorator(fn: Callable) -> Callable:
@@ -58,7 +62,10 @@ def wrap_tool(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                _log_tool_invocation(ledger, agent_id, name, args, kwargs)
+                if sample_rate < 1.0 and random.random() >= sample_rate:
+                    return await fn(*args, **kwargs)
+                if log_invocation:
+                    _log_tool_invocation(ledger, agent_id, name, args, kwargs)
                 start = time.perf_counter()
                 try:
                     res = await fn(*args, **kwargs)
@@ -74,7 +81,10 @@ def wrap_tool(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                _log_tool_invocation(ledger, agent_id, name, args, kwargs)
+                if sample_rate < 1.0 and random.random() >= sample_rate:
+                    return fn(*args, **kwargs)
+                if log_invocation:
+                    _log_tool_invocation(ledger, agent_id, name, args, kwargs)
                 start = time.perf_counter()
                 try:
                     res = fn(*args, **kwargs)
@@ -132,10 +142,13 @@ def wrap_completion(
     ledger: Ledger,
     agent_id: str = "llm-agent",
     model: Optional[str] = None,
+    log_prompt: bool = True,
+    sample_rate: float = 1.0,
 ) -> Callable:
     """
     Decorator for OpenAI, Anthropic, or custom LLM client completion functions.
     Extracts prompts, generated responses, token usage, and latency.
+    Allows disabling prompt logging (recording only completion output) and configurable sampling.
     """
 
     def decorator(fn: Callable) -> Callable:
@@ -143,7 +156,12 @@ def wrap_completion(
 
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
+                if sample_rate < 1.0 and random.random() >= sample_rate:
+                    return await fn(*args, **kwargs)
+                if log_prompt:
+                    used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
+                else:
+                    used_model = str(kwargs.get("model") or model or "unknown")
                 start = time.perf_counter()
                 try:
                     resp = await fn(*args, **kwargs)
@@ -159,7 +177,12 @@ def wrap_completion(
 
             @functools.wraps(fn)
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
+                if sample_rate < 1.0 and random.random() >= sample_rate:
+                    return fn(*args, **kwargs)
+                if log_prompt:
+                    used_model = _log_completion_prompt(ledger, agent_id, model, args, kwargs)
+                else:
+                    used_model = str(kwargs.get("model") or model or "unknown")
                 start = time.perf_counter()
                 try:
                     resp = fn(*args, **kwargs)
