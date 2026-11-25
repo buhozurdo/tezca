@@ -42,6 +42,19 @@ class TestCanonical(unittest.TestCase):
         self.assertEqual(h1, h2)
         self.assertEqual(len(h1), 64)
 
+    def test_custom_canonical_serializer(self):
+        from tezca.canonical import get_canonical_serializer, set_canonical_serializer
+
+        self.assertIsNone(get_canonical_serializer())
+        try:
+            set_canonical_serializer(lambda obj: '{"fast":true}')
+            self.assertIsNotNone(get_canonical_serializer())
+            self.assertEqual(canonical_dumps({"any": 123}), '{"fast":true}')
+        finally:
+            set_canonical_serializer(None)
+        self.assertIsNone(get_canonical_serializer())
+        self.assertEqual(canonical_dumps({"b": 1, "a": 2}), '{"a":2,"b":1}')
+
 
 if __name__ == "__main__":
     unittest.main()

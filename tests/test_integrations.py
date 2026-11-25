@@ -141,6 +141,82 @@ class TestIntegrations(unittest.TestCase):
             self.assertTrue(valid)
             self.assertEqual(report["verified_events"], 2)
 
+    def test_wrap_tool_optimized_logging_and_sampling(self):
+        with Ledger(self.db_path) as ledger:
+            # 1. log_invocation=False sync
+            @wrap_tool(ledger, log_invocation=False)
+            def quick_calc(x: int) -> int:
+                return x * 10
+
+            res = quick_calc(5)
+            self.assertEqual(res, 50)
+            self.assertEqual(len(ledger), 1)
+            receipt = ledger.latest()
+            self.assertEqual(receipt.event_type, AgentEventType.TOOL_RESULT.value)
+
+            # 2. log_invocation=False async
+            @wrap_tool(ledger, log_invocation=False)
+            async def async_quick_calc(x: int) -> int:
+                return x * 20
+
+            async_res = asyncio.run(async_quick_calc(5))
+            self.assertEqual(async_res, 100)
+            self.assertEqual(len(ledger), 2)
+
+            # 3. sample_rate=0.0 sync (sampled out)
+            @wrap_tool(ledger, sample_rate=0.0)
+            def sampled_out(x: int) -> int:
+                return x + 1
+
+            self.assertEqual(sampled_out(10), 11)
+            self.assertEqual(len(ledger), 2)  # No new events recorded
+
+            # 4. sample_rate=0.0 async (sampled out)
+            @wrap_tool(ledger, sample_rate=0.0)
+            async def async_sampled_out(x: int) -> int:
+                return x + 2
+
+            self.assertEqual(asyncio.run(async_sampled_out(10)), 12)
+            self.assertEqual(len(ledger), 2)  # No new events recorded
+
+    def test_wrap_completion_optimized_logging_and_sampling(self):
+        with Ledger(self.db_path) as ledger:
+            # 1. log_prompt=False sync
+            @wrap_completion(ledger, log_prompt=False)
+            def fast_llm(prompt: str):
+                return SimpleNamespace(text="Answer", usage={"tokens": 10})
+
+            resp = fast_llm("What is 1+1?")
+            self.assertEqual(resp.text, "Answer")
+            self.assertEqual(len(ledger), 1)
+            receipt = ledger.latest()
+            self.assertEqual(receipt.event_type, AgentEventType.COMPLETION.value)
+
+            # 2. log_prompt=False async
+            @wrap_completion(ledger, log_prompt=False)
+            async def async_fast_llm(prompt: str):
+                return SimpleNamespace(text="Async Answer", usage={"tokens": 10})
+
+            async_resp = asyncio.run(async_fast_llm("Ping"))
+            self.assertEqual(async_resp.text, "Async Answer")
+            self.assertEqual(len(ledger), 2)
+
+            # 3. sample_rate=0.0 sync (sampled out)
+            @wrap_completion(ledger, sample_rate=0.0)
+            def sampled_llm(prompt: str):
+                return SimpleNamespace(text="Ignored", usage={})
+
+            self.assertEqual(sampled_llm("Hi").text, "Ignored")
+            self.assertEqual(len(ledger), 2)  # No new events recorded
+
+            # 4. sample_rate=0.0 async (sampled out)
+            @wrap_completion(ledger, sample_rate=0.0)
+            async def async_sampled_llm(prompt: str):
+                return SimpleNamespace(text="Async Ignored", usage={})
+
+            self.assertEqual(asyncio.run(async_sampled_llm("Hi")).text, "Async Ignored")
+            self.assertEqual(len(ledger), 2)  # No new events recorded
+
 
 if __name__ == "__main__":
     unittest.main()

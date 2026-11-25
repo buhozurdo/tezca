@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable, Optional
 
 GENESIS_HASH = "0" * 64
 
@@ -19,14 +19,32 @@ _CANONICAL_ENCODER = json.JSONEncoder(
     default=str,
 )
 
+_CUSTOM_SERIALIZER: Optional[Callable[[Any], str]] = None
+
+
+def set_canonical_serializer(serializer: Optional[Callable[[Any], str]]) -> None:
+    """
+    Register a custom high-performance serializer (e.g. orjson/ujson) for canonical JSON dumps.
+    Pass None to reset back to standard library encoder.
+    """
+    global _CUSTOM_SERIALIZER
+    _CUSTOM_SERIALIZER = serializer
+
+
+def get_canonical_serializer() -> Optional[Callable[[Any], str]]:
+    """Return currently active custom serializer or None."""
+    return _CUSTOM_SERIALIZER
+
 
 def canonical_dumps(obj: Any) -> str:
     """
-    Produce a deterministic, compact JSON string using cached stdlib encoder.
+    Produce a deterministic, compact JSON string using cached stdlib encoder or registered native serializer.
     
     Keys are sorted lexicographically, separators are minimal without spaces,
     and non-string keys/types fallback cleanly.
     """
+    if _CUSTOM_SERIALIZER is not None:
+        return _CUSTOM_SERIALIZER(obj)
     return _CANONICAL_ENCODER.encode(obj)
 
 
