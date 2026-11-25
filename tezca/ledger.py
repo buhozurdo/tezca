@@ -34,7 +34,9 @@ class Ledger:
         signer_id: Optional[str] = None,
     ):
         self.path = Path(path)
-        self.secret_key = secret_key
+        self.secret_key: Optional[bytes] = (
+            secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
+        )
         self.signer_id = signer_id
 
         if storage is not None:
@@ -78,7 +80,9 @@ class Ledger:
             prev_hash=prev_hash,
         )
 
-        effective_key = secret_key if secret_key is not None else self.secret_key
+        effective_key = (
+            secret_key.encode("utf-8") if isinstance(secret_key, str) else (secret_key or self.secret_key)
+        )
         effective_signer = signer_id if signer_id is not None else self.signer_id
 
         receipt_sig = None
@@ -131,7 +135,9 @@ class Ledger:
         count = 0
         expected_prev_hash = GENESIS_HASH
         latest_hash: Optional[str] = None
-        effective_key = secret_key if secret_key is not None else self.secret_key
+        effective_key = (
+            secret_key.encode("utf-8") if isinstance(secret_key, str) else (secret_key or self.secret_key)
+        )
 
         for idx, row in enumerate(self.storage.iter_raw()):
             idx_num, ts, agent, ev_type, data_raw, meta_raw, prev_h, h, sig, signer = row[:10]

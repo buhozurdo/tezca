@@ -96,6 +96,32 @@ class TestMerkleTree(unittest.TestCase):
         self.assertEqual(proof.steps, restored.steps)
         self.assertTrue(restored.verify())
 
+    def test_binary_proof_serialization_roundtrip_and_errors(self):
+        leaves = [f"{i:064x}" for i in range(11)]
+        tree = MerkleTree(leaves)
+        proof = tree.get_proof(5)
+
+        raw_bytes = proof.to_bytes()
+        self.assertIsInstance(raw_bytes, bytes)
+        restored = MerkleProof.from_bytes(raw_bytes)
+
+        self.assertEqual(proof.leaf_index, restored.leaf_index)
+        self.assertEqual(proof.leaf_hash, restored.leaf_hash)
+        self.assertEqual(proof.root_hash, restored.root_hash)
+        self.assertEqual(len(proof.steps), len(restored.steps))
+        for s1, s2 in zip(proof.steps, restored.steps):
+            self.assertEqual(s1.position, s2.position)
+            self.assertEqual(s1.sibling_hash, s2.sibling_hash)
+        self.assertTrue(restored.verify())
+
+        # Error handling: truncated header (< 70 bytes)
+        with self.assertRaises(ValueError):
+            MerkleProof.from_bytes(b"too_short")
+
+        # Error handling: truncated step payload
+        with self.assertRaises(ValueError):
+            MerkleProof.from_bytes(raw_bytes[:75])
+
     def test_invalid_step_position_fails_verification(self):
         proof = MerkleProof(
             leaf_index=0,

@@ -5,6 +5,7 @@ Zero-dependency cryptographic Merkle Tree implementation for batch verification.
 from __future__ import annotations
 
 import hashlib
+import struct
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence, Union
 
@@ -75,6 +76,58 @@ class MerkleProof:
             "steps": [s.to_dict() for s in self.steps],
         }
 
+    def to_bytes(self) -> bytes:
+        """
+        Serialize the Merkle proof into a compact binary representation.
+        Format:
+          - leaf_index: 4 bytes uint32 (big-endian)
+          - leaf_hash: 32 bytes raw SHA-256
+          - root_hash: 32 bytes raw SHA-256
+          - step_count: 2 bytes uint16 (big-endian)
+          - steps: N * (1 byte position [0: left, 1: right] + 32 bytes raw SHA-256)
+        """
+        buf = bytearray()
+        buf.extend(struct.pack(">I", self.leaf_index))
+        buf.extend(bytes.fromhex(self.leaf_hash))
+        buf.extend(bytes.fromhex(self.root_hash))
+        buf.extend(struct.pack(">H", len(self.steps)))
+        for s in self.steps:
+            pos_byte = 0 if s.position == "left" else 1
+            buf.append(pos_byte)
+            buf.extend(bytes.fromhex(s.sibling_hash))
+        return bytes(buf)
+
+    @classmethod
+    def from_bytes(cls, b: bytes) -> MerkleProof:
+        """
+        Deserialize a Merkle proof from compact binary representation.
+        """
+        if len(b) < 70:
+            raise ValueError(f"Invalid Merkle proof binary: length {len(b)} < header 70 bytes")
+
+        leaf_idx = struct.unpack_from(">I", b, 0)[0]
+        leaf_hash = b[4:36].hex()
+        root_hash = b[36:68].hex()
+        step_count = struct.unpack_from(">H", b, 68)[0]
+
+        offset = 70
+        steps: list[MerkleStep] = []
+        for _ in range(step_count):
+            if offset + 33 > len(b):
+                raise ValueError("Corrupted binary proof: truncated step record")
+            pos_val = b[offset]
+            position = "left" if pos_val == 0 else "right"
+            sibling_hash = b[offset + 1 : offset + 33].hex()
+            steps.append(MerkleStep(position=position, sibling_hash=sibling_hash))
+            offset += 33
+
+        return cls(
+            leaf_index=leaf_idx,
+            leaf_hash=leaf_hash,
+            root_hash=root_hash,
+            steps=steps,
+        )
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> MerkleProof:
         steps = [MerkleStep.from_dict(s) for s in d.get("steps", [])]
@@ -108,15 +161,13 @@ class MerkleTree:
         self._levels = [current_level]
 
         while len(current_level) > 1:
-            next_level: list[str] = []
-            for i in range(0, len(current_level), 2):
+            lvl_len = len(current_level)
+            next_len = (lvl_len + 1) // 2
+            next_level: list[str] = [None] * next_len  # type: ignore
+            for i in range(0, lvl_len, 2):
                 left = current_level[i]
-                if i + 1 < len(current_level):
-                    right = current_level[i + 1]
-                else:
-                    # Duplicate last odd node (standard Merkle tree balancing)
-                    right = left
-                next_level.append(hash_pair(left, right))
+                right = current_level[i + 1] if (i + 1 < lvl_len) else left
+                next_level[i // 2] = hash_pair(left, right)
             self._levels.append(next_level)
             current_level = next_level
 
