@@ -5,6 +5,7 @@ Core Ledger implementation managing hash-chained audit trails.
 from __future__ import annotations
 
 import hmac
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Optional, Union
@@ -34,19 +35,33 @@ class Ledger:
         signer_id: Optional[str] = None,
         timeout: float = 30.0,
     ):
+        str_path = str(path)
+        self.is_memory = str_path == ":memory:" or "mode=memory" in str_path
         self.path = Path(path)
         self.timeout = float(timeout)
         self.secret_key: Optional[bytes] = (
             secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
         )
         self.signer_id = signer_id
+        self._lock = threading.Lock()
 
         if storage is not None:
             self.storage = storage
+            self.is_memory = getattr(storage, "is_memory", False)
+        elif self.is_memory:
+            self.storage = SQLiteStorage(":memory:", timeout=self.timeout)
         elif self.path.suffix.lower() == ".jsonl":
             self.storage = JSONLStorage(self.path)
         else:
             self.storage = SQLiteStorage(self.path, timeout=self.timeout)
+
+    def flush_to_disk(self, target_path: str | Path) -> None:
+        """
+        Persist the ledger state to an on-disk SQLite or JSONL file.
+        For in-memory ledgers (:memory:), this enables ultra-fast execution in ephemeral
+        environments (AWS Lambda, Google Cloud Run) with a zero-loss atomic persistence step.
+        """
+        self.storage.flush_to_disk(target_path)
 
     def record(
         self,
@@ -62,50 +77,51 @@ class Ledger:
         Record and cryptographically seal an agent event in the ledger.
         Optionally signs the receipt using HMAC-SHA256 for author non-repudiation.
         """
-        latest = self.storage.get_latest()
-        prev_hash = latest.hash if latest is not None else GENESIS_HASH
-        index = (latest.index + 1) if latest is not None else 0
+        with self._lock:
+            latest = self.storage.get_latest()
+            prev_hash = latest.hash if latest is not None else GENESIS_HASH
+            index = (latest.index + 1) if latest is not None else 0
 
-        ts = timestamp or datetime.now(timezone.utc).isoformat()
-        meta = metadata if metadata is not None else {}
+            ts = timestamp or datetime.now(timezone.utc).isoformat()
+            meta = metadata if metadata is not None else {}
 
-        canonical_data = canonical_dumps(data)
-        canonical_meta = canonical_dumps(meta)
+            canonical_data = canonical_dumps(data)
+            canonical_meta = canonical_dumps(meta)
 
-        receipt_hash = compute_receipt_hash(
-            index=index,
-            timestamp=ts,
-            agent_id=agent_id,
-            event_type=event_type,
-            canonical_data=canonical_data,
-            canonical_metadata=canonical_meta,
-            prev_hash=prev_hash,
-        )
+            receipt_hash = compute_receipt_hash(
+                index=index,
+                timestamp=ts,
+                agent_id=agent_id,
+                event_type=event_type,
+                canonical_data=canonical_data,
+                canonical_metadata=canonical_meta,
+                prev_hash=prev_hash,
+            )
 
-        effective_key = (
-            secret_key.encode("utf-8") if isinstance(secret_key, str) else (secret_key or self.secret_key)
-        )
-        effective_signer = signer_id if signer_id is not None else self.signer_id
+            effective_key = (
+                secret_key.encode("utf-8") if isinstance(secret_key, str) else (secret_key or self.secret_key)
+            )
+            effective_signer = signer_id if signer_id is not None else self.signer_id
 
-        receipt_sig = None
-        if effective_key is not None:
-            receipt_sig = compute_hmac_signature(receipt_hash, effective_key)
+            receipt_sig = None
+            if effective_key is not None:
+                receipt_sig = compute_hmac_signature(receipt_hash, effective_key)
 
-        receipt = Receipt(
-            index=index,
-            timestamp=ts,
-            agent_id=agent_id,
-            event_type=event_type,
-            data=data,
-            metadata=meta,
-            prev_hash=prev_hash,
-            hash=receipt_hash,
-            signature=receipt_sig,
-            signer_id=effective_signer if receipt_sig is not None else None,
-        )
+            receipt = Receipt(
+                index=index,
+                timestamp=ts,
+                agent_id=agent_id,
+                event_type=event_type,
+                data=data,
+                metadata=meta,
+                prev_hash=prev_hash,
+                hash=receipt_hash,
+                signature=receipt_sig,
+                signer_id=effective_signer if receipt_sig is not None else None,
+            )
 
-        self.storage.append(receipt)
-        return receipt
+            self.storage.append(receipt)
+            return receipt
 
     def record_event(
         self,

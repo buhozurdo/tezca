@@ -59,6 +59,15 @@ class StorageBackend:
     def count(self) -> int:
         raise NotImplementedError
 
+    @property
+    def is_memory(self) -> bool:
+        """Whether this storage backend is an ephemeral in-memory storage."""
+        return False
+
+    def flush_to_disk(self, target_path: str | Path) -> None:
+        """Persist storage state to an on-disk file."""
+        raise NotImplementedError
+
     def close(self) -> None:
         pass
 
@@ -77,6 +86,12 @@ class SQLiteStorage(StorageBackend):
         retry_delay: float = 0.05,
     ):
         self.db_path = str(db_path)
+        self.is_uri = self.db_path.startswith("file:")
+        self._is_memory = (
+            self.db_path == ":memory:"
+            or ":memory:" in self.db_path
+            or "mode=memory" in self.db_path
+        )
         self.timeout = float(timeout)
         self.max_retries = int(max_retries)
         self.retry_delay = float(retry_delay)
@@ -85,9 +100,14 @@ class SQLiteStorage(StorageBackend):
             self.db_path,
             timeout=self.timeout,
             check_same_thread=False,
+            uri=self.is_uri,
             isolation_level=None,  # Autocommit mode with explicit transactions
         )
         self._setup()
+
+    @property
+    def is_memory(self) -> bool:
+        return self._is_memory
 
     def _setup(self) -> None:
         import random
@@ -97,9 +117,10 @@ class SQLiteStorage(StorageBackend):
             with self._lock:
                 cur = self._conn.cursor()
                 try:
-                    mode = cur.execute("PRAGMA journal_mode;").fetchone()
-                    if not mode or str(mode[0]).lower() != "wal":
-                        cur.execute("PRAGMA journal_mode=WAL;")
+                    if not self._is_memory:
+                        mode = cur.execute("PRAGMA journal_mode;").fetchone()
+                        if not mode or str(mode[0]).lower() != "wal":
+                            cur.execute("PRAGMA journal_mode=WAL;")
                     cur.execute("PRAGMA synchronous=NORMAL;")
                     cur.execute("PRAGMA cache_size=-64000;")
                     cur.execute("PRAGMA temp_store=MEMORY;")
@@ -274,8 +295,10 @@ class SQLiteStorage(StorageBackend):
         """
         Execute WAL checkpoint to sync WAL journal frames into main database file.
         Modes: PASSIVE, FULL, RESTART, TRUNCATE.
-        Returns: (busy, log_frames, checkpointed_frames).
+        Returns: (busy, log_frames, checkpointed_frames). For in-memory databases, returns (0, 0, 0).
         """
+        if self._is_memory:
+            return (0, 0, 0)
         valid_modes = {"PASSIVE", "FULL", "RESTART", "TRUNCATE"}
         target_mode = mode.upper()
         if target_mode not in valid_modes:
@@ -285,6 +308,26 @@ class SQLiteStorage(StorageBackend):
             cur.execute(f"PRAGMA wal_checkpoint({target_mode});")
             row = cur.fetchone()
             return (int(row[0]), int(row[1]), int(row[2])) if row else (0, 0, 0)
+
+    def flush_to_disk(self, target_path: str | Path) -> None:
+        """
+        Persist the SQLite database (in-memory or on-disk) to a target disk file.
+        Uses the native SQLite Online Backup API for an atomic, consistent snapshot.
+        """
+        str_target = str(target_path)
+        if str_target == ":memory:" or ":memory:" in str_target or "mode=memory" in str_target:
+            raise ValueError("Target path for flush_to_disk must be a real disk path, not ':memory:'.")
+
+        target = Path(target_path)
+        if target.parent:
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+        with self._lock:
+            dest_conn = sqlite3.connect(str(target), timeout=self.timeout)
+            try:
+                self._conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
 
     def close(self) -> None:
         with self._lock:
@@ -396,3 +439,26 @@ class JSONLStorage(StorageBackend):
 
     def count(self) -> int:
         return sum(1 for _ in self.iter_all())
+
+    @property
+    def is_memory(self) -> bool:
+        return False
+
+    def flush_to_disk(self, target_path: str | Path) -> None:
+        """
+        Persist JSONL logs to a target disk file by flushing buffers and copying content.
+        """
+        import shutil
+
+        str_target = str(target_path)
+        if str_target == ":memory:" or ":memory:" in str_target or "mode=memory" in str_target:
+            raise ValueError("Target path for flush_to_disk must be a real disk path, not ':memory:'.")
+
+        target = Path(target_path)
+        if target.parent:
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+        with self._lock:
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
+            shutil.copyfile(self.file_path, target)
