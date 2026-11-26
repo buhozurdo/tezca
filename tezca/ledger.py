@@ -32,8 +32,10 @@ class Ledger:
         storage: Optional[StorageBackend] = None,
         secret_key: Optional[Union[str, bytes]] = None,
         signer_id: Optional[str] = None,
+        timeout: float = 30.0,
     ):
         self.path = Path(path)
+        self.timeout = float(timeout)
         self.secret_key: Optional[bytes] = (
             secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
         )
@@ -44,7 +46,7 @@ class Ledger:
         elif self.path.suffix.lower() == ".jsonl":
             self.storage = JSONLStorage(self.path)
         else:
-            self.storage = SQLiteStorage(self.path)
+            self.storage = SQLiteStorage(self.path, timeout=self.timeout)
 
     def record(
         self,
@@ -263,6 +265,15 @@ class Ledger:
         Alias for compare_with.
         """
         return self.compare_with(other)
+
+    def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
+        """
+        Execute WAL checkpoint on the underlying SQLite database.
+        Returns (0, 0, 0) for non-SQLite backends.
+        """
+        if isinstance(self.storage, SQLiteStorage):
+            return self.storage.checkpoint(mode=mode)
+        return (0, 0, 0)
 
     def __iter__(self) -> Iterator[Receipt]:
         return self.storage.iter_all()
