@@ -43,6 +43,34 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 1
 
 
+def cmd_verify_chain(args: argparse.Namespace) -> int:
+    from tezca.ledger import verify_ledger_chain
+
+    paths = [Path(p) for p in args.archives]
+    for p in paths:
+        if not p.exists():
+            print(f"[ERROR] Archive file not found: {p}", file=sys.stderr)
+            return 1
+
+    try:
+        valid, report = verify_ledger_chain(paths, secret_key=args.secret_key)
+        if valid:
+            total_archives = report["total_archives"]
+            total_events = report["total_events"]
+            latest = report["latest_hash"]
+            print(f"[OK] {total_archives} archives verified ({total_events:,} total events).")
+            print(f"[OK] Chained archive integrity: INTACT (Latest hash: {latest[:16]}...)")
+            return 0
+        else:
+            failed_arc = report.get("failed_archive")
+            print(f"[FAIL] Chained integrity broken at archive: {failed_arc}", file=sys.stderr)
+            print(f"Error: {report.get('error')}", file=sys.stderr)
+            return 1
+    except Exception as exc:
+        print(f"[ERROR] Chain verification failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_tail(args: argparse.Namespace) -> int:
     path = Path(args.ledger)
     if not path.exists():
@@ -252,6 +280,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("ledger", help="Path to audit.db or audit.jsonl")
     p_verify.add_argument("--secret-key", help="Optional HMAC secret key to verify receipt signatures")
     p_verify.set_defaults(func=cmd_verify)
+
+    # verify-chain
+    p_vchain = subparsers.add_parser(
+        "verify-chain",
+        help="Verify cryptographic continuity across a sequence of rotated archives.",
+    )
+    p_vchain.add_argument("archives", nargs="+", help="Ordered list of archive paths from oldest to newest")
+    p_vchain.add_argument("--secret-key", help="Optional secret key to verify receipt signatures")
+    p_vchain.set_defaults(func=cmd_verify_chain)
 
     # tail
     p_tail = subparsers.add_parser("tail", help="Show the most recent receipts.")

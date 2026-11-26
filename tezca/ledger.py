@@ -34,16 +34,26 @@ class Ledger:
         secret_key: Optional[Union[str, bytes]] = None,
         signer_id: Optional[str] = None,
         timeout: float = 30.0,
+        max_records: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+        archive_dir: Optional[Union[str, Path]] = None,
+        archive_prefix: Optional[str] = None,
+        initial_prev_hash: Optional[str] = None,
+        initial_index: Optional[int] = None,
     ):
         str_path = str(path)
         self.is_memory = str_path == ":memory:" or "mode=memory" in str_path
         self.path = Path(path)
         self.timeout = float(timeout)
+        self.max_records = int(max_records) if max_records is not None else None
+        self.max_bytes = int(max_bytes) if max_bytes is not None else None
+        self.archive_dir = Path(archive_dir) if archive_dir is not None else None
+        self.archive_prefix = archive_prefix or (self.path.stem if not self.is_memory else "audit")
         self.secret_key: Optional[bytes] = (
             secret_key.encode("utf-8") if isinstance(secret_key, str) else secret_key
         )
         self.signer_id = signer_id
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         if storage is not None:
             self.storage = storage
@@ -54,6 +64,105 @@ class Ledger:
             self.storage = JSONLStorage(self.path)
         else:
             self.storage = SQLiteStorage(self.path, timeout=self.timeout)
+
+        if initial_prev_hash is not None:
+            self.storage.set_metadata("genesis_hash", initial_prev_hash)
+        if initial_index is not None:
+            self.storage.set_metadata("genesis_index", str(initial_index))
+
+    @property
+    def genesis_hash(self) -> str:
+        """Hash linking this ledger to its parent archive or GENESIS_HASH."""
+        return self.storage.genesis_hash
+
+    @property
+    def genesis_index(self) -> int:
+        """Initial record sequence index for this ledger partition."""
+        return self.storage.genesis_index
+
+    def _should_rotate(self) -> bool:
+        if self.is_memory:
+            return False
+        if self.max_records is not None and self.storage.count() >= self.max_records:
+            return True
+        if self.max_bytes is not None and self.storage.byte_size() >= self.max_bytes:
+            return True
+        return False
+
+    def rotate(self, archive_path: Optional[Union[str, Path]] = None) -> Optional[Path]:
+        """
+        Rotate the current ledger to an archive file and link the new file's genesis
+        to the last recorded receipt's hash.
+        Returns the Path of the archived file, or None if the ledger is empty.
+        """
+        with self._lock:
+            if self.is_memory:
+                raise ValueError("Cannot rotate an in-memory ledger (:memory:).")
+
+            latest = self.storage.get_latest()
+            if latest is None:
+                return None
+
+            last_hash = latest.hash
+            last_index = latest.index
+
+            # Checkpoint WAL if SQLite
+            if isinstance(self.storage, SQLiteStorage):
+                self.storage.checkpoint(mode="TRUNCATE")
+
+            self.storage.close()
+
+            target_dir = self.archive_dir or self.path.parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            if archive_path is not None:
+                dest = Path(archive_path)
+            else:
+                num = 1
+                suffix = self.path.suffix
+                while True:
+                    candidate = target_dir / f"{self.archive_prefix}.{num:04d}{suffix}"
+                    if not candidate.exists():
+                        dest = candidate
+                        break
+                    num += 1
+
+            import shutil
+            shutil.move(str(self.path), str(dest))
+
+            # Reopen fresh storage at self.path
+            if self.path.suffix.lower() == ".jsonl":
+                self.storage = JSONLStorage(self.path)
+            else:
+                self.storage = SQLiteStorage(self.path, timeout=self.timeout)
+
+            # Cryptographically link new storage's genesis to previous archive's last hash
+            self.storage.set_metadata("genesis_hash", last_hash)
+            self.storage.set_metadata("genesis_index", str(last_index + 1))
+            self.storage.set_metadata("parent_archive", dest.name)
+
+            return dest
+
+    def get_archives(self) -> list[Path]:
+        """Return all historical archive files ordered sequentially."""
+        if self.is_memory:
+            return []
+        target_dir = self.archive_dir or self.path.parent
+        if not target_dir.exists():
+            return []
+        pattern = f"{self.archive_prefix}.*{self.path.suffix}"
+        matches = sorted(target_dir.glob(pattern))
+        return [m for m in matches if m.resolve() != self.path.resolve()]
+
+    def verify_chain(
+        self,
+        secret_key: Optional[Union[str, bytes]] = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Verify the full cryptographic chain across all rotated archives plus active ledger."""
+        all_paths = self.get_archives()
+        if self.path.exists() and self.storage.count() > 0:
+            all_paths.append(self.path)
+        return verify_ledger_chain(all_paths, secret_key=secret_key)
 
     def flush_to_disk(self, target_path: str | Path) -> None:
         """
@@ -78,9 +187,12 @@ class Ledger:
         Optionally signs the receipt using HMAC-SHA256 for author non-repudiation.
         """
         with self._lock:
+            if self._should_rotate():
+                self.rotate()
+
             latest = self.storage.get_latest()
-            prev_hash = latest.hash if latest is not None else GENESIS_HASH
-            index = (latest.index + 1) if latest is not None else 0
+            prev_hash = latest.hash if latest is not None else self.genesis_hash
+            index = (latest.index + 1) if latest is not None else self.genesis_index
 
             ts = timestamp or datetime.now(timezone.utc).isoformat()
             meta = metadata if metadata is not None else {}
@@ -144,26 +256,32 @@ class Ledger:
             signer_id=signer_id,
         )
 
-    def verify(self, secret_key: Optional[Union[str, bytes]] = None) -> tuple[bool, dict[str, Any]]:
+    def verify(
+        self,
+        secret_key: Optional[Union[str, bytes]] = None,
+        expected_genesis_hash: Optional[str] = None,
+    ) -> tuple[bool, dict[str, Any]]:
         """
         Verify the mathematical integrity of the entire ledger hash chain.
         Fast-paths verification using raw stored canonical fields without JSON deserialization overhead.
         Early exits immediately on any detected anomaly or tamper attempt.
         """
         count = 0
-        expected_prev_hash = GENESIS_HASH
+        expected_prev_hash = expected_genesis_hash or self.genesis_hash
         latest_hash: Optional[str] = None
         effective_key = (
             secret_key.encode("utf-8") if isinstance(secret_key, str) else (secret_key or self.secret_key)
         )
+        start_index = self.genesis_index
 
         for idx, row in enumerate(self.storage.iter_raw()):
             idx_num, ts, agent, ev_type, data_raw, meta_raw, prev_h, h, sig, signer = row[:10]
-            if idx_num != idx:
+            expected_idx = start_index + idx
+            if idx_num != expected_idx:
                 return False, {
                     "verified_events": count,
                     "failed_at_index": idx_num,
-                    "error": f"Index sequence mismatch: expected {idx}, got {idx_num}",
+                    "error": f"Index sequence mismatch: expected {expected_idx}, got {idx_num}",
                 }
             if prev_h != expected_prev_hash:
                 return False, {
@@ -209,8 +327,8 @@ class Ledger:
 
         return True, {
             "verified_events": count,
-            "genesis_hash": GENESIS_HASH,
-            "latest_hash": latest_hash or GENESIS_HASH,
+            "genesis_hash": expected_genesis_hash or self.genesis_hash,
+            "latest_hash": latest_hash or (expected_genesis_hash or self.genesis_hash),
         }
 
     def latest(self) -> Optional[Receipt]:
@@ -305,3 +423,46 @@ class Ledger:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
+
+
+def verify_ledger_chain(
+    paths: list[str | Path],
+    secret_key: Optional[Union[str, bytes]] = None,
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Forensically verify an ordered chain of rotated ledger archives.
+    Confirms that each archive's genesis mathematically links to the previous archive's final receipt hash.
+    """
+    if not paths:
+        return True, {"total_archives": 0, "total_events": 0, "latest_hash": GENESIS_HASH}
+
+    total_events = 0
+    expected_prev = GENESIS_HASH
+    last_archive_hash = GENESIS_HASH
+
+    for p in paths:
+        path_obj = Path(p)
+        if not path_obj.exists():
+            return False, {
+                "failed_archive": str(p),
+                "error": f"Archive file does not exist: {p}",
+            }
+        with Ledger(path=path_obj) as ledger:
+            if len(ledger) == 0:
+                continue
+            valid, details = ledger.verify(secret_key=secret_key, expected_genesis_hash=expected_prev)
+            if not valid:
+                return False, {
+                    "failed_archive": str(p),
+                    "error": details.get("error", "Integrity check failed"),
+                    "details": details,
+                }
+            expected_prev = details["latest_hash"]
+            last_archive_hash = details["latest_hash"]
+            total_events += details["verified_events"]
+
+    return True, {
+        "total_archives": len(paths),
+        "total_events": total_events,
+        "latest_hash": last_archive_hash,
+    }

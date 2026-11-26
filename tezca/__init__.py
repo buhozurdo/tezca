@@ -15,7 +15,7 @@ from tezca.events import AgentEvent, AgentEventType
 from tezca.fork import ForkReport, ForkStatus, detect_fork, detect_forks
 from tezca.integrations.interceptors import track_agent_call, wrap_completion, wrap_tool
 from tezca.integrations.langchain import TezcaCallbackHandler
-from tezca.ledger import Ledger
+from tezca.ledger import Ledger, verify_ledger_chain
 from tezca.merkle import MerkleProof, MerkleStep, MerkleTree
 from tezca.proof import PROOF_SCHEMA_VERSION, ProofBundle
 from tezca.receipt import Receipt
@@ -52,6 +52,7 @@ __all__ = [
     "get_canonical_serializer",
     "set_canonical_serializer",
     "track_agent_call",
+    "verify_ledger_chain",
     "wrap_completion",
     "wrap_tool",
 ]

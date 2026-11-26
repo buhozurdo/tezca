@@ -64,6 +64,28 @@ class StorageBackend:
         """Whether this storage backend is an ephemeral in-memory storage."""
         return False
 
+    @property
+    def genesis_hash(self) -> str:
+        """Hash linking this storage to its parent archive or GENESIS_HASH."""
+        return "0" * 64
+
+    @property
+    def genesis_index(self) -> int:
+        """Initial record sequence index for this storage partition."""
+        return 0
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Store partition-level cryptographic metadata."""
+        pass
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        """Retrieve partition-level metadata by key."""
+        return None
+
+    def byte_size(self) -> int:
+        """Total size in bytes of the underlying storage file(s)."""
+        return 0
+
     def flush_to_disk(self, target_path: str | Path) -> None:
         """Persist storage state to an on-disk file."""
         raise NotImplementedError
@@ -95,7 +117,11 @@ class SQLiteStorage(StorageBackend):
         self.timeout = float(timeout)
         self.max_retries = int(max_retries)
         self.retry_delay = float(retry_delay)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        if not self._is_memory and not self.is_uri:
+            p = Path(self.db_path)
+            if p.parent and not p.parent.exists():
+                p.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(
             self.db_path,
             timeout=self.timeout,
@@ -157,6 +183,12 @@ class SQLiteStorage(StorageBackend):
                     cur.execute("""
                         CREATE INDEX IF NOT EXISTS idx_tezca_event_type
                         ON tezca_receipts(event_type);
+                    """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS tezca_metadata (
+                            key TEXT PRIMARY KEY,
+                            value TEXT NOT NULL
+                        );
                     """)
                     return
                 except sqlite3.OperationalError as ex:
@@ -291,6 +323,47 @@ class SQLiteStorage(StorageBackend):
             cur.execute("SELECT COUNT(*) FROM tezca_receipts;")
             return int(cur.fetchone()[0])
 
+    def set_metadata(self, key: str, value: str) -> None:
+        """Store partition-level cryptographic metadata."""
+        self._execute_write(
+            """
+            INSERT INTO tezca_metadata (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+            """,
+            (key, str(value)),
+        )
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        """Retrieve partition-level metadata by key."""
+        with self._lock:
+            cur = self._conn.cursor()
+            cur.execute("SELECT value FROM tezca_metadata WHERE key = ?;", (key,))
+            row = cur.fetchone()
+            return str(row[0]) if row else None
+
+    @property
+    def genesis_hash(self) -> str:
+        return self.get_metadata("genesis_hash") or "0" * 64
+
+    @property
+    def genesis_index(self) -> int:
+        val = self.get_metadata("genesis_index")
+        return int(val) if val is not None else 0
+
+    def byte_size(self) -> int:
+        """Total size in bytes of the SQLite database and its WAL files."""
+        if self._is_memory:
+            return 0
+        p = Path(self.db_path)
+        total = p.stat().st_size
+        wal = p.with_name(p.name + "-wal")
+        if wal.exists():
+            total += wal.stat().st_size
+        shm = p.with_name(p.name + "-shm")
+        if shm.exists():
+            total += shm.stat().st_size
+        return total
+
     def checkpoint(self, mode: str = "PASSIVE") -> tuple[int, int, int]:
         """
         Execute WAL checkpoint to sync WAL journal frames into main database file.
@@ -343,20 +416,29 @@ class JSONLStorage(StorageBackend):
         self.file_path = Path(file_path)
         self.buffer_size = buffer_size
         self.auto_flush = auto_flush
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._writer: Optional[Any] = None
         self._latest: Optional[Receipt] = None
+        self._metadata: dict[str, str] = {}
         if not self.file_path.exists():
             self.file_path.touch()
         else:
+            self._metadata = self._read_metadata_from_disk()
             self._latest = self._read_latest_from_disk()
+
+    def _read_metadata_from_disk(self) -> dict[str, str]:
+        with open(self.file_path, "r", encoding="utf-8") as f:
+            first = f.readline().strip()
+            if first and first.startswith('{"#tezca_meta"'):
+                return json.loads(first).get("#tezca_meta", {})
+        return {}
 
     def _read_latest_from_disk(self) -> Optional[Receipt]:
         last: Optional[Receipt] = None
         with open(self.file_path, "r", encoding="utf-8") as f:
             for line in f:
                 clean = line.strip()
-                if clean:
+                if clean and not clean.startswith('{"#tezca_meta"'):
                     last = Receipt.from_dict(json.loads(clean))
         return last
 
@@ -399,7 +481,7 @@ class JSONLStorage(StorageBackend):
             with open(self.file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     clean = line.strip()
-                    if clean:
+                    if clean and not clean.startswith('{"#tezca_meta"'):
                         yield Receipt.from_dict(json.loads(clean))
 
     def iter_raw(self) -> Iterator[tuple]:
@@ -412,7 +494,7 @@ class JSONLStorage(StorageBackend):
             with open(self.file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     clean = line.strip()
-                    if clean:
+                    if clean and not clean.startswith('{"#tezca_meta"'):
                         d = json.loads(clean)
                         yield (
                             d["index"],
@@ -439,6 +521,45 @@ class JSONLStorage(StorageBackend):
 
     def count(self) -> int:
         return sum(1 for _ in self.iter_all())
+
+    def set_metadata(self, key: str, value: str) -> None:
+        """Store partition-level cryptographic metadata."""
+        with self._lock:
+            self._metadata[key] = str(value)
+            if self._writer and not self._writer.closed:
+                self._writer.flush()
+                self._writer.close()
+                self._writer = None
+            existing_lines = []
+            if self.file_path.exists():
+                with open(self.file_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip().startswith('{"#tezca_meta"'):
+                            existing_lines.append(line)
+            header = json.dumps({"#tezca_meta": self._metadata}, ensure_ascii=False) + "\n"
+            with open(self.file_path, "w", encoding="utf-8") as f:
+                f.write(header)
+                for line in existing_lines:
+                    f.write(line)
+
+    def get_metadata(self, key: str) -> Optional[str]:
+        with self._lock:
+            return self._metadata.get(key)
+
+    @property
+    def genesis_hash(self) -> str:
+        with self._lock:
+            return self._metadata.get("genesis_hash", "0" * 64)
+
+    @property
+    def genesis_index(self) -> int:
+        with self._lock:
+            val = self._metadata.get("genesis_index")
+            return int(val) if val is not None else 0
+
+    def byte_size(self) -> int:
+        """Total size in bytes of the JSONL file."""
+        return self.file_path.stat().st_size
 
     @property
     def is_memory(self) -> bool:
